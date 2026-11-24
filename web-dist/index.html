@@ -1,23 +1,29 @@
 <!doctype html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN" class="dark" data-style="precision" data-width="boxed">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OCI Helper Serverless</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230ea5e9'/%3E%3Cpath d='M8 20l8-9 8 9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
-    <script type="module" crossorigin src="/assets/index-DwZEqr4A.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BbaPobom.css">
-  </head>
-  <body>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M8 20l8-9 8 9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
     <script>
       try {
-        if (localStorage.getItem("oci_mini_theme") === "light") {
-          document.documentElement.classList.add("light");
-        } else {
-          document.documentElement.classList.add("dark");
-        }
+        var r = document.documentElement;
+        var st = localStorage.getItem("oci_mini_style");
+        r.dataset.style = st === "bento" || st === "cockpit" ? st : "precision";
+        var wd = localStorage.getItem("oci_mini_width");
+        r.dataset.width = wd === "wide" ? "wide" : "boxed";
+        var th = localStorage.getItem("oci_mini_theme") === "light" ? "light" : "dark";
+        r.classList.toggle("light", th === "light");
+        r.classList.toggle("dark", th === "dark");
+        r.style.colorScheme = th;
       } catch (e) {}
     </script>
+    <script type="module" crossorigin src="/assets/index-DwZEqr4A.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BbaPobom.css">
+    <link rel="stylesheet" href="/assets/theme-system.css?v=20261125">
+    <script type="module" src="/assets/ui-enhance.js?v=20261125"></script>
+  </head>
+  <body>
     <div id="app"></div>
   </body>
 </html>
