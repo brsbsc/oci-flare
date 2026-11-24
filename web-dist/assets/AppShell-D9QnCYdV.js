@@ -1,26 +1,306 @@
-import{p as f,d as O,r as _,q as j,o as T,c as n,a as e,n as p,b as i,u as a,h as x,F as w,x as y,y as h,z as d,g,T as A,j as E,A as N,B as G,i as q,k as o,C,X as F,f as I,D}from"./index-DwZEqr4A.js";import{C as S}from"./cpu-DXhH09MM.js";import{C as P,a as W,G as X}from"./globe-B50gmVkX.js";import{C as Y}from"./cloud-CXwMDqrH.js";import{L as J}from"./list-todo-PMH-fdWU.js";/**
- * @license @lucide/vue v1.77.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const K={name:"log-out",size:24,node:[["path",{d:"m16 17 5-5-5-5",key:"1bji2h"}],["path",{d:"M21 12H9",key:"dn1m92"}],["path",{d:"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4",key:"1uf3rs"}]]},H=f(K);/**
- * @license @lucide/vue v1.77.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const Q={name:"menu",size:24,node:[["path",{d:"M4 5h16",key:"1tepv9"}],["path",{d:"M4 12h16",key:"1lakjw"}],["path",{d:"M4 19h16",key:"1djgab"}]]},U=f(Q);/**
- * @license @lucide/vue v1.77.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const Z={name:"moon",size:24,node:[["path",{d:"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401",key:"kfwtm"}]]},R=f(Z);/**
- * @license @lucide/vue v1.77.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const ee={name:"settings",size:24,node:[["path",{d:"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",key:"1i5ecw"}],["circle",{cx:"12",cy:"12",r:"3",key:"1v7zrd"}]]},te=f(ee);/**
- * @license @lucide/vue v1.77.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const se={name:"sun",size:24,node:[["circle",{cx:"12",cy:"12",r:"4",key:"4exip2"}],["path",{d:"M12 2v2",key:"tus03m"}],["path",{d:"M12 20v2",key:"1lh1kg"}],["path",{d:"m4.93 4.93 1.41 1.41",key:"149t6j"}],["path",{d:"m17.66 17.66 1.41 1.41",key:"ptbguv"}],["path",{d:"M2 12h2",key:"1t8f8n"}],["path",{d:"M20 12h2",key:"1q8mjw"}],["path",{d:"m6.34 17.66-1.41 1.41",key:"1m8zz5"}],["path",{d:"m19.07 4.93-1.41 1.41",key:"1shlcs"}]]},V=f(se),oe={class:"flex h-screen overflow-hidden"},ae={class:"px-3 py-5"},ie={class:"grid size-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-sky-500 to-cyan-400 shadow-lg shadow-sky-500/30"},le={key:0,class:"min-w-0 flex-1"},ne={class:"flex flex-1 flex-col gap-1 px-2"},re={key:0,class:"flex-1 truncate"},ce={class:"flex min-w-0 flex-1 flex-col overflow-hidden"},de={class:"flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4 md:px-8"},he={class:"flex min-w-0 items-center gap-2"},me={class:"min-w-0"},ue={class:"truncate text-base font-semibold text-white md:text-lg"},pe={class:"hidden truncate text-xs text-slate-500 sm:block"},xe={class:"flex shrink-0 items-center gap-1"},fe=["title"],ge={class:"min-h-0 flex-1 overflow-y-auto px-4 py-5 pb-20 md:px-8 md:py-6 md:pb-6"},ke={class:"fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-white/10 bg-ink-900/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"},be={class:"truncate"},ve={key:0,class:"fixed inset-0 z-50 md:hidden"},_e={class:"panel absolute inset-y-0 left-0 w-[78%] max-w-xs overflow-y-auto rounded-none p-4 shadow-2xl"},we={class:"mb-5 flex items-center justify-between"},ye={class:"flex items-center gap-2.5"},Ce={class:"grid size-9 place-items-center rounded-xl bg-gradient-to-br from-sky-500 to-cyan-400"},ze={class:"flex flex-col gap-1"},Me={class:"flex-1 truncate"},Le={class:"mt-5 border-t border-white/[0.06] pt-4"},Ve=O({__name:"AppShell",setup(je){const m=E(),$=q(),k=[{name:"cfgs",label:"OCI 配置",icon:Y},{name:"tasks",label:"任务管理",icon:J},{name:"cloudflare",label:"Cloudflare",icon:X},{name:"settings",label:"系统设置",icon:te}],l=_(localStorage.getItem("oci_mini_sidebar")==="1"),r=_(localStorage.getItem("oci_mini_theme")||"dark"),u=_(!1);j(()=>m.fullPath,()=>u.value=!1);function z(){l.value=!l.value,localStorage.setItem("oci_mini_sidebar",l.value?"1":"0")}function M(){r.value=r.value==="dark"?"light":"dark"}j(r,c=>{const s=document.documentElement;s.classList.toggle("light",c==="light"),s.classList.toggle("dark",c==="dark"),localStorage.setItem("oci_mini_theme",c)},{immediate:!0}),T(()=>{document.documentElement.classList.toggle("light",r.value==="light")});async function L(){await N(),G(),$.push("/login")}function b(c){return c==="cfgs"?m.path.startsWith("/cfgs"):m.name===c}return(c,s)=>{const v=D("RouterLink"),B=D("RouterView");return o(),n("div",oe,[e("aside",{class:p(["hidden shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] bg-ink-900/50 backdrop-blur transition-[width] duration-200 md:flex",l.value?"w-[68px]":"w-56"])},[e("div",ae,[e("div",{class:p(["flex items-center gap-2.5",l.value?"justify-center":""])},[e("div",ie,[i(a(S),{class:"size-5 text-white"})]),l.value?x("",!0):(o(),n("div",le,[...s[3]||(s[3]=[e("div",{class:"truncate text-sm font-semibold tracking-wide text-white"},"OCI Helper",-1),e("div",{class:"truncate text-[11px] text-slate-500"},"Cloudflare Edition",-1)])])),l.value?x("",!0):(o(),n("button",{key:1,class:"shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/10 hover:text-white",title:"收起侧边栏",onClick:z},[i(a(P),{class:"size-4"})]))],2),l.value?(o(),n("button",{key:0,class:"mt-3 flex w-full justify-center rounded-md py-1.5 text-slate-500 transition-colors hover:bg-white/10 hover:text-white",title:"展开侧边栏",onClick:z},[i(a(W),{class:"size-4"})])):x("",!0)]),e("nav",ne,[(o(),n(w,null,y(k,t=>i(v,{key:t.name,to:{name:t.name},class:p(["flex items-center gap-3 rounded-lg py-2.5 text-sm transition-colors",[l.value?"justify-center px-0":"px-3",b(t.name)?"bg-white/[0.08] text-white ring-1 ring-white/10":"text-slate-400 hover:bg-white/[0.04] hover:text-slate-200"]]),title:l.value?t.label:void 0},{default:g(()=>[(o(),d(C(t.icon),{class:"size-4 shrink-0"})),l.value?x("",!0):(o(),n("span",re,h(t.label),1))]),_:2},1032,["to","class","title"])),64))])],2),e("main",ce,[e("header",de,[e("div",he,[e("button",{class:"shrink-0 rounded-md p-2 text-slate-400 transition-colors hover:bg-white/10 hover:text-white md:hidden",title:"打开菜单",onClick:s[0]||(s[0]=t=>u.value=!0)},[i(a(U),{class:"size-5"})]),e("div",me,[e("h1",ue,h(a(m).meta.title||"OCI Helper"),1),e("p",pe,h(a(m).meta.desc||""),1)])]),e("div",xe,[s[4]||(s[4]=e("a",{href:"https://github.com/Yohann0617/oci-helper-serverless-cf",target:"_blank",rel:"noopener",title:"GitHub 项目地址",class:"flex items-center gap-1.5 rounded-md px-2 py-2 text-slate-400 transition-colors hover:bg-white/10 hover:text-white"},[e("svg",{class:"size-4",viewBox:"0 0 24 24",fill:"currentColor","aria-hidden":"true"},[e("path",{d:"M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.4 3.6 1.1.1-.8.4-1.4.8-1.7-2.7-.3-5.5-1.4-5.5-6.1 0-1.4.5-2.5 1.3-3.4-.1-.3-.6-1.6.1-3.3 0 0 1-.3 3.4 1.2a11.7 11.7 0 0 1 6.1 0C17.3 4.9 18.3 5.2 18.3 5.2c.7 1.7.2 3 .1 3.3.8.9 1.3 2 1.3 3.4 0 4.7-2.8 5.8-5.5 6.1.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3z"})]),e("span",{class:"hidden text-xs sm:inline"},"GitHub")],-1)),e("button",{class:"rounded-md p-2 text-slate-400 transition-colors hover:bg-white/10 hover:text-white",title:r.value==="dark"?"切换到白天模式":"切换到黑夜模式",onClick:M},[r.value==="dark"?(o(),d(a(V),{key:0,class:"size-4"})):(o(),d(a(R),{key:1,class:"size-4"}))],8,fe),e("button",{class:"rounded-md p-2 text-slate-400 transition-colors hover:bg-white/10 hover:text-white",title:"退出登录",onClick:L},[i(a(H),{class:"size-4"})])])]),e("div",ge,[i(B)])]),e("nav",ke,[(o(),n(w,null,y(k,t=>i(v,{key:t.name,to:{name:t.name},class:p(["flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] transition-colors",b(t.name)?"text-sky-300":"text-slate-500"])},{default:g(()=>[(o(),d(C(t.icon),{class:"size-5 shrink-0"})),e("span",be,h(t.label),1)]),_:2},1032,["to","class"])),64))]),i(A,{name:"fade"},{default:g(()=>[u.value?(o(),n("div",ve,[e("div",{class:"absolute inset-0 bg-slate-950/70 backdrop-blur-sm",onClick:s[1]||(s[1]=t=>u.value=!1)}),e("div",_e,[e("div",we,[e("div",ye,[e("div",Ce,[i(a(S),{class:"size-5 text-white"})]),s[5]||(s[5]=e("div",null,[e("div",{class:"text-sm font-semibold text-white"},"OCI Helper"),e("div",{class:"text-[11px] text-slate-500"},"Cloudflare Edition")],-1))]),e("button",{class:"rounded-md p-1.5 text-slate-400 hover:bg-white/10 hover:text-white",onClick:s[2]||(s[2]=t=>u.value=!1)},[i(a(F),{class:"size-4"})])]),e("nav",ze,[(o(),n(w,null,y(k,t=>i(v,{key:t.name,to:{name:t.name},class:p(["flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors",b(t.name)?"bg-white/[0.08] text-white ring-1 ring-white/10":"text-slate-400 hover:bg-white/[0.04]"])},{default:g(()=>[(o(),d(C(t.icon),{class:"size-4 shrink-0"})),e("span",Me,h(t.label),1)]),_:2},1032,["to","class"])),64))]),e("div",Le,[e("button",{class:"flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm text-slate-400 hover:bg-white/[0.04]",onClick:M},[r.value==="dark"?(o(),d(a(V),{key:0,class:"size-4"})):(o(),d(a(R),{key:1,class:"size-4"})),I(" "+h(r.value==="dark"?"切换到白天模式":"切换到黑夜模式"),1)]),e("button",{class:"flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm text-rose-300 hover:bg-rose-500/10",onClick:L},[i(a(H),{class:"size-4"}),s[6]||(s[6]=I(" 退出登录 ",-1))])])])])):x("",!0)]),_:1})])}}});export{Ve as default};
+import{p as createIcon,d as defineComponent,r as ref,q as watch,o as onMounted,S as onUnmounted,c as createElementBlock,a as createElementVNode,n as normalizeClass,R as normalizeStyle,b as createVNode,u as unref,h as createCommentVNode,F as Fragment,x as renderList,y as toDisplayString,z as createBlock,g as withCtx,T as Transition,j as useRoute,A as logoutApi,B as clearToken,i as useRouter,k as openBlock,C as resolveDynamicComponent,X as XIcon,f as createTextVNode,D as resolveComponent,J as computed}from"./index-DwZEqr4A.js";
+import{C as CpuIcon}from"./cpu-DXhH09MM.js";
+import{C as ChevronLeft,a as ChevronRight,G as GlobeIcon}from"./globe-B50gmVkX.js";
+import{C as CloudIcon}from"./cloud-CXwMDqrH.js";
+import{L as ListTodoIcon}from"./list-todo-PMH-fdWU.js";
+import{STYLE_META,getStyle,getTheme,getWidth,setStyle,setTheme,toggleTheme,setWidth,toggleWidth,onThemeChange,applyPrefs}from"./theme-store.js";
+
+const LogOutIcon=createIcon({name:"log-out",size:24,node:[["path",{d:"m16 17 5-5-5-5",key:"1bji2h"}],["path",{d:"M21 12H9",key:"dn1m92"}],["path",{d:"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4",key:"1uf3rs"}]]});
+const MenuIcon=createIcon({name:"menu",size:24,node:[["path",{d:"M4 5h16",key:"1tepv9"}],["path",{d:"M4 12h16",key:"1lakjw"}],["path",{d:"M4 19h16",key:"1djgab"}]]});
+const MoonIcon=createIcon({name:"moon",size:24,node:[["path",{d:"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401",key:"kfwtm"}]]});
+const SettingsIcon=createIcon({name:"settings",size:24,node:[["path",{d:"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",key:"1i5ecw"}],["circle",{cx:"12",cy:"12",r:"3",key:"1v7zrd"}]]});
+const SunIcon=createIcon({name:"sun",size:24,node:[["circle",{cx:"12",cy:"12",r:"4",key:"4exip2"}],["path",{d:"M12 2v2",key:"tus03m"}],["path",{d:"M12 20v2",key:"1lh1kg"}],["path",{d:"m4.93 4.93 1.41 1.41",key:"149t6j"}],["path",{d:"m17.66 17.66 1.41 1.41",key:"ptbguv"}],["path",{d:"M2 12h2",key:"1t8f8n"}],["path",{d:"M20 12h2",key:"1q8mjw"}],["path",{d:"m6.34 17.66-1.41 1.41",key:"1m8zz5"}],["path",{d:"m19.07 4.93-1.41 1.41",key:"1shlcs"}]]});
+const PaletteIcon=createIcon({name:"palette",size:24,node:[["circle",{cx:"13.5",cy:"6.5",r:".5",fill:"currentColor"}],["circle",{cx:"17.5",cy:"10.5",r:".5",fill:"currentColor"}],["circle",{cx:"8.5",cy:"7.5",r:".5",fill:"currentColor"}],["circle",{cx:"6.5",cy:"12.5",r:".5",fill:"currentColor"}],["path",{d:"M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"}]]});
+const ExpandIcon=createIcon({name:"maximize-2",size:24,node:[["polyline",{points:"15 3 21 3 21 9"}],["polyline",{points:"9 21 3 21 3 15"}],["line",{x1:"21",x2:"14",y1:"3",y2:"10"}],["line",{x1:"3",x2:"10",y1:"21",y2:"14"}]]});
+const ShrinkIcon=createIcon({name:"minimize-2",size:24,node:[["polyline",{points:"4 14 10 14 10 20"}],["polyline",{points:"20 10 14 10 14 4"}],["line",{x1:"14",x2:"21",y1:"10",y2:"3"}],["line",{x1:"3",x2:"10",y1:"21",y2:"14"}]]});
+const CheckIcon=createIcon({name:"check",size:24,node:[["path",{d:"M20 6 9 17l-5-5"}]]});
+
+const Ve=defineComponent({
+  __name:"AppShell",
+  setup(){
+    const route=useRoute();
+    const router=useRouter();
+    const navItems=[
+      {name:"cfgs",label:"OCI 配置",icon:CloudIcon},
+      {name:"tasks",label:"任务管理",icon:ListTodoIcon},
+      {name:"cloudflare",label:"Cloudflare",icon:GlobeIcon},
+      {name:"settings",label:"系统设置",icon:SettingsIcon}
+    ];
+    const collapsed=ref(localStorage.getItem("oci_mini_sidebar")==="1");
+    const style=ref(getStyle());
+    const theme=ref(getTheme());
+    const width=ref(getWidth());
+    const mobileOpen=ref(!1);
+    const themeMenuOpen=ref(!1);
+    const popoverAnchor=ref(null);
+
+    const activeStyleMeta=computed(()=>STYLE_META.find(s=>s.id===style.value)||STYLE_META[0]);
+
+    watch(()=>route.fullPath,()=>{mobileOpen.value=!1;themeMenuOpen.value=!1});
+
+    function toggleSidebar(){
+      collapsed.value=!collapsed.value;
+      try{localStorage.setItem("oci_mini_sidebar",collapsed.value?"1":"0")}catch{}
+    }
+    function pickStyle(id){setStyle(id)}
+    function pickTheme(mode){setTheme(mode)}
+    function onToggleTheme(){toggleTheme()}
+    function pickWidth(w){setWidth(w)}
+    function onToggleWidth(){toggleWidth()}
+
+    function onDocPointerDown(e){
+      if(!themeMenuOpen.value)return;
+      const el=popoverAnchor.value;
+      if(el&&!el.contains(e.target))themeMenuOpen.value=!1;
+    }
+    function onDocKeyDown(e){
+      if(e.key==="Escape"&&themeMenuOpen.value){
+        e.stopPropagation();
+        themeMenuOpen.value=!1;
+      }
+    }
+
+    let unsubTheme=null;
+    onMounted(()=>{
+      applyPrefs();
+      unsubTheme=onThemeChange(d=>{
+        style.value=d.style;
+        theme.value=d.theme;
+        width.value=d.width;
+      });
+      document.addEventListener("pointerdown",onDocPointerDown);
+      document.addEventListener("keydown",onDocKeyDown);
+    });
+    onUnmounted(()=>{
+      if(unsubTheme)unsubTheme();
+      document.removeEventListener("pointerdown",onDocPointerDown);
+      document.removeEventListener("keydown",onDocKeyDown);
+    });
+
+    async function logout(){await logoutApi();clearToken();router.push("/login")}
+    function isNavActive(name){return name==="cfgs"?route.path.startsWith("/cfgs"):route.name===name}
+
+    return()=>{
+      const RouterLink=resolveComponent("RouterLink");
+      const RouterView=resolveComponent("RouterView");
+      return(openBlock(),createElementBlock("div",{class:"flex h-screen overflow-hidden"},[
+        // Desktop Sidebar
+        createElementVNode("aside",{class:normalizeClass(["shell-sidebar hidden shrink-0 flex-col overflow-y-auto transition-[width] duration-200 md:flex",collapsed.value?"w-[68px]":"w-56"])},[
+          createElementVNode("div",{class:"px-3 py-5"},[
+            createElementVNode("div",{class:normalizeClass(["flex items-center gap-2.5",collapsed.value?"justify-center":""])},[
+              createElementVNode("div",{class:"brand-mark size-9"},[createVNode(unref(CpuIcon),{class:"size-5"})]),
+              collapsed.value?createCommentVNode("",!0):(openBlock(),createElementBlock("div",{key:0,class:"min-w-0 flex-1"},[
+                createElementVNode("div",{class:"truncate text-sm font-semibold tracking-wide text-white"},"OCI Helper"),
+                createElementVNode("div",{class:"truncate text-[11px] text-slate-500"},"Cloudflare Edition")
+              ])),
+              collapsed.value?createCommentVNode("",!0):(openBlock(),createElementBlock("button",{key:1,type:"button",class:"header-icon-btn shrink-0",title:"收起侧边栏","aria-label":"收起侧边栏",onClick:toggleSidebar},[createVNode(unref(ChevronLeft),{class:"size-4"})]))
+            ],2),
+            collapsed.value?(openBlock(),createElementBlock("button",{key:0,type:"button",class:"header-icon-btn mt-3 w-full justify-center",title:"展开侧边栏","aria-label":"展开侧边栏",onClick:toggleSidebar},[createVNode(unref(ChevronRight),{class:"size-4"})])):createCommentVNode("",!0)
+          ]),
+          createElementVNode("nav",{class:"flex flex-1 flex-col gap-1 px-2","aria-label":"主导航"},[
+            (openBlock(),createElementBlock(Fragment,null,renderList(navItems,item=>createVNode(RouterLink,{
+              key:item.name,
+              to:{name:item.name},
+              class:normalizeClass(["flex items-center gap-3 rounded-lg py-2.5 text-sm transition-colors",[collapsed.value?"justify-center px-0":"px-3",isNavActive(item.name)?"nav-item-active":"nav-item-idle"]]),
+              title:collapsed.value?item.label:void 0,
+              "aria-label":collapsed.value?item.label:void 0
+            },{
+              default:withCtx(()=>[
+                (openBlock(),createBlock(resolveDynamicComponent(item.icon),{class:"size-4 shrink-0"})),
+                collapsed.value?createCommentVNode("",!0):(openBlock(),createElementBlock("span",{key:0,class:"flex-1 truncate"},toDisplayString(item.label),1))
+              ]),
+              _:2
+            },1032,["to","class","title","aria-label"])),64))
+          ])
+        ],2),
+
+        // Main Area
+        createElementVNode("main",{class:"flex min-w-0 flex-1 flex-col overflow-hidden"},[
+          createElementVNode("header",{class:"shell-header shrink-0 px-4 py-3 md:px-8"},[
+            createElementVNode("div",{class:"shell-header-inner"},[
+              createElementVNode("div",{class:"flex min-w-0 items-center gap-2"},[
+                createElementVNode("button",{type:"button",class:"header-icon-btn shrink-0 md:hidden",title:"打开菜单","aria-label":"打开菜单",onClick:()=>{mobileOpen.value=!0}},[createVNode(unref(MenuIcon),{class:"size-5"})]),
+                createElementVNode("div",{class:"min-w-0"},[
+                  createElementVNode("h1",{class:"truncate text-base font-semibold text-white md:text-lg"},toDisplayString(unref(route).meta.title||"OCI Helper"),1),
+                  createElementVNode("p",{class:"hidden truncate text-xs text-slate-500 sm:block"},toDisplayString(unref(route).meta.desc||""),1)
+                ])
+              ]),
+              createElementVNode("div",{class:"flex shrink-0 items-center gap-1"},[
+                // Theme Switcher Popover
+                createElementVNode("div",{ref_key:"popoverAnchor",ref:popoverAnchor,class:"theme-popover-anchor"},[
+                  createElementVNode("button",{
+                    type:"button",
+                    class:normalizeClass(["header-icon-btn",themeMenuOpen.value?"is-open":""]),
+                    title:"切换风格主题",
+                    "aria-label":"切换风格主题",
+                    "aria-haspopup":"menu",
+                    "aria-expanded":String(themeMenuOpen.value),
+                    onClick:()=>{themeMenuOpen.value=!themeMenuOpen.value}
+                  },[
+                    createVNode(unref(PaletteIcon),{class:"size-4"}),
+                    createElementVNode("span",{class:"hidden text-xs font-medium sm:inline"},toDisplayString(activeStyleMeta.value.shortName),1)
+                  ],10,["aria-expanded"]),
+                  createVNode(Transition,{name:"fade"},{
+                    default:withCtx(()=>[
+                      themeMenuOpen.value?(openBlock(),createElementBlock("div",{key:0,class:"theme-popover",role:"menu","aria-label":"风格主题设置"},[
+                        createElementVNode("div",{class:"theme-popover-title"},"界面风格主题"),
+                        createElementVNode("div",{class:"theme-option-list"},[
+                          (openBlock(),createElementBlock(Fragment,null,renderList(STYLE_META,item=>createElementVNode("button",{
+                            key:item.id,
+                            type:"button",
+                            role:"menuitemradio",
+                            "aria-checked":String(style.value===item.id),
+                            class:normalizeClass(["theme-option",style.value===item.id?"is-active":""]),
+                            onClick:()=>pickStyle(item.id)
+                          },[
+                            createElementVNode("span",{class:"theme-swatches"},[
+                              (openBlock(),createElementBlock(Fragment,null,renderList(item.swatches[theme.value]||item.swatches.dark,(hex,idx)=>createElementVNode("span",{key:idx,class:"theme-swatch-dot",style:normalizeStyle({backgroundColor:hex})},null,4)),64))
+                            ]),
+                            createElementVNode("span",{class:"min-w-0 flex-1"},[
+                              createElementVNode("span",{class:"block truncate text-xs font-medium text-white"},toDisplayString(item.name),1),
+                              createElementVNode("span",{class:"block truncate text-[11px] text-slate-500"},toDisplayString(item.desc),1)
+                            ]),
+                            style.value===item.id?(openBlock(),createBlock(unref(CheckIcon),{key:0,class:"size-4 shrink-0 text-sky-300"})):createCommentVNode("",!0)
+                          ],10,["aria-checked","onClick"])),64))
+                        ]),
+                        createElementVNode("div",{class:"theme-popover-footer"},[
+                          createElementVNode("div",{class:"segmented-group",role:"group","aria-label":"明暗模式"},[
+                            createElementVNode("button",{type:"button",class:normalizeClass(["segmented-btn flex-1",theme.value==="dark"?"is-active":""]),"aria-pressed":String(theme.value==="dark"),onClick:()=>pickTheme("dark")},"深色",10,["aria-pressed"]),
+                            createElementVNode("button",{type:"button",class:normalizeClass(["segmented-btn flex-1",theme.value==="light"?"is-active":""]),"aria-pressed":String(theme.value==="light"),onClick:()=>pickTheme("light")},"浅色",10,["aria-pressed"])
+                          ]),
+                          createElementVNode("div",{class:"segmented-group",role:"group","aria-label":"页面宽度"},[
+                            createElementVNode("button",{type:"button",class:normalizeClass(["segmented-btn flex-1",width.value==="boxed"?"is-active":""]),"aria-pressed":String(width.value==="boxed"),onClick:()=>pickWidth("boxed")},"居中",10,["aria-pressed"]),
+                            createElementVNode("button",{type:"button",class:normalizeClass(["segmented-btn flex-1",width.value==="wide"?"is-active":""]),"aria-pressed":String(width.value==="wide"),onClick:()=>pickWidth("wide")},"宽屏",10,["aria-pressed"])
+                          ])
+                        ])
+                      ])):createCommentVNode("",!0)
+                    ]),
+                    _:1
+                  })
+                ],512),
+
+                // Width Toggle (Desktop)
+                createElementVNode("button",{
+                  type:"button",
+                  class:"header-icon-btn hidden md:inline-flex",
+                  title:width.value==="boxed"?"切换为宽屏布局":"切换为居中布局",
+                  "aria-label":width.value==="boxed"?"切换为宽屏布局":"切换为居中布局",
+                  onClick:onToggleWidth
+                },[
+                  width.value==="boxed"?(openBlock(),createBlock(unref(ExpandIcon),{key:0,class:"size-4"})):(openBlock(),createBlock(unref(ShrinkIcon),{key:1,class:"size-4"}))
+                ],8,["title","aria-label"]),
+
+                // Quick Dark/Light Toggle
+                createElementVNode("button",{
+                  type:"button",
+                  class:"header-icon-btn",
+                  title:theme.value==="dark"?"切换到浅色模式":"切换到深色模式",
+                  "aria-label":theme.value==="dark"?"切换到浅色模式":"切换到深色模式",
+                  onClick:onToggleTheme
+                },[
+                  theme.value==="dark"?(openBlock(),createBlock(unref(SunIcon),{key:0,class:"size-4"})):(openBlock(),createBlock(unref(MoonIcon),{key:1,class:"size-4"}))
+                ],8,["title","aria-label"]),
+
+                // GitHub link
+                createElementVNode("a",{
+                  href:"https://github.com/Yohann0617/oci-helper-serverless-cf",
+                  target:"_blank",
+                  rel:"noopener",
+                  title:"GitHub 项目地址",
+                  "aria-label":"GitHub 项目地址",
+                  class:"header-icon-btn"
+                },[
+                  createElementVNode("svg",{class:"size-4",viewBox:"0 0 24 24",fill:"currentColor","aria-hidden":"true"},[createElementVNode("path",{d:"M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.4 3.6 1.1.1-.8.4-1.4.8-1.7-2.7-.3-5.5-1.4-5.5-6.1 0-1.4.5-2.5 1.3-3.4-.1-.3-.6-1.6.1-3.3 0 0 1-.3 3.4 1.2a11.7 11.7 0 0 1 6.1 0C17.3 4.9 18.3 5.2 18.3 5.2c.7 1.7.2 3 .1 3.3.8.9 1.3 2 1.3 3.4 0 4.7-2.8 5.8-5.5 6.1.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3z"})]),
+                  createElementVNode("span",{class:"hidden text-xs lg:inline"},"GitHub")
+                ]),
+
+                // Logout
+                createElementVNode("button",{type:"button",class:"header-icon-btn",title:"退出登录","aria-label":"退出登录",onClick:logout},[createVNode(unref(LogOutIcon),{class:"size-4"})])
+              ])
+            ])
+          ]),
+
+          // Centered Scrollable Page Content
+          createElementVNode("div",{class:"min-h-0 flex-1 overflow-y-auto px-4 py-5 pb-20 md:px-8 md:py-6 md:pb-6"},[
+            createElementVNode("div",{class:"shell-container"},[
+              createVNode(RouterView)
+            ])
+          ])
+        ]),
+
+        // Mobile Bottom Nav
+        createElementVNode("nav",{class:"shell-mobile-nav fixed inset-x-0 bottom-0 z-40 flex items-stretch pb-[env(safe-area-inset-bottom)] md:hidden","aria-label":"移动端导航"},[
+          (openBlock(),createElementBlock(Fragment,null,renderList(navItems,item=>createVNode(RouterLink,{
+            key:item.name,
+            to:{name:item.name},
+            class:normalizeClass(["flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] transition-colors",isNavActive(item.name)?"text-sky-300 font-medium":"text-slate-500"])
+          },{
+            default:withCtx(()=>[
+              (openBlock(),createBlock(resolveDynamicComponent(item.icon),{class:"size-5 shrink-0"})),
+              createElementVNode("span",{class:"truncate"},toDisplayString(item.label),1)
+            ]),
+            _:2
+          },1032,["to","class"])),64))
+        ]),
+
+        // Mobile Slide Drawer
+        createVNode(Transition,{name:"fade"},{
+          default:withCtx(()=>[
+            mobileOpen.value?(openBlock(),createElementBlock("div",{key:0,class:"fixed inset-0 z-50 md:hidden"},[
+              createElementVNode("div",{class:"ui-dialog-backdrop",onClick:()=>{mobileOpen.value=!1}}),
+              createElementVNode("div",{class:"panel absolute inset-y-0 left-0 w-[80%] max-w-xs overflow-y-auto rounded-none p-4 shadow-2xl"},[
+                createElementVNode("div",{class:"mb-5 flex items-center justify-between"},[
+                  createElementVNode("div",{class:"flex items-center gap-2.5"},[
+                    createElementVNode("div",{class:"brand-mark size-9"},[createVNode(unref(CpuIcon),{class:"size-5"})]),
+                    createElementVNode("div",null,[
+                      createElementVNode("div",{class:"text-sm font-semibold text-white"},"OCI Helper"),
+                      createElementVNode("div",{class:"text-[11px] text-slate-500"},"Cloudflare Edition")
+                    ])
+                  ]),
+                  createElementVNode("button",{type:"button",class:"header-icon-btn",title:"关闭菜单","aria-label":"关闭菜单",onClick:()=>{mobileOpen.value=!1}},[createVNode(unref(XIcon),{class:"size-4"})])
+                ]),
+                createElementVNode("nav",{class:"flex flex-col gap-1"},[
+                  (openBlock(),createElementBlock(Fragment,null,renderList(navItems,item=>createVNode(RouterLink,{
+                    key:item.name,
+                    to:{name:item.name},
+                    class:normalizeClass(["flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors",isNavActive(item.name)?"nav-item-active":"nav-item-idle"])
+                  },{
+                    default:withCtx(()=>[
+                      (openBlock(),createBlock(resolveDynamicComponent(item.icon),{class:"size-4 shrink-0"})),
+                      createElementVNode("span",{class:"flex-1 truncate"},toDisplayString(item.label),1)
+                    ]),
+                    _:2
+                  },1032,["to","class"])),64))
+                ]),
+                createElementVNode("div",{class:"mt-5 space-y-3 border-t border-white/[0.06] pt-4"},[
+                  createElementVNode("div",null,[
+                    createElementVNode("div",{class:"theme-popover-title"},"界面风格主题"),
+                    createElementVNode("div",{class:"segmented-group w-full"},[
+                      (openBlock(),createElementBlock(Fragment,null,renderList(STYLE_META,item=>createElementVNode("button",{
+                        key:item.id,
+                        type:"button",
+                        class:normalizeClass(["segmented-btn flex-1",style.value===item.id?"is-active":""]),
+                        "aria-pressed":String(style.value===item.id),
+                        onClick:()=>pickStyle(item.id)
+                      },toDisplayString(item.shortName),11,["aria-pressed","onClick"])),64))
+                    ])
+                  ]),
+                  createElementVNode("button",{type:"button",class:"flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-400 hover:bg-white/[0.04]",onClick:onToggleTheme},[
+                    theme.value==="dark"?(openBlock(),createBlock(unref(SunIcon),{key:0,class:"size-4"})):(openBlock(),createBlock(unref(MoonIcon),{key:1,class:"size-4"})),
+                    createTextVNode(" "+toDisplayString(theme.value==="dark"?"切换到浅色模式":"切换到深色模式"),1)
+                  ]),
+                  createElementVNode("button",{type:"button",class:"flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-rose-300 hover:bg-rose-500/10",onClick:logout},[
+                    createVNode(unref(LogOutIcon),{class:"size-4"}),
+                    createTextVNode(" 退出登录 ")
+                  ])
+                ])
+              ])
+            ])):createCommentVNode("",!0)
+          ]),
+          _:1
+        })
+      ]))
+    };
+  }
+});
+export{Ve as default};
