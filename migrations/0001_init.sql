@@ -1,4 +1,4 @@
--- OCI Helper Serverless —— 完整 D1 初始化（合并历史所有增量迁移，幂等，可重复执行）
+-- OCI Flare —— 完整 D1 初始化（合并历史所有增量迁移，幂等，可重复执行）
 -- 说明：本文件即最终 schema；线上已执行过旧迁移的数据库再次执行不会破坏已有数据
 --       （全部 CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS）。
 

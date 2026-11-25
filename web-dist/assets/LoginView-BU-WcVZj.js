@@ -115,7 +115,7 @@ const se=defineComponent({
         createElementVNode("div",{class:"mb-6 flex items-center gap-3"},[
           createElementVNode("div",{class:"brand-mark size-10"},[createVNode(unref(CpuIcon),{class:"size-5"})]),
           createElementVNode("div",null,[
-            createElementVNode("h1",{class:"text-base font-semibold text-white"},"OCI Helper Serverless"),
+            createElementVNode("h1",{class:"text-base font-semibold text-white"},"OCI Flare"),
             createElementVNode("p",{class:"text-xs text-slate-500"},"Cloudflare Workers + D1")
           ])
         ]),

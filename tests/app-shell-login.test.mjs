@@ -37,14 +37,24 @@ test("LoginView aligns with theme-store, provides corner quick switcher, uses .b
   assert.match(src, /export\{[A-Za-z0-9_$]+ as default\}/);
 });
 
-test("AppShell, LoginView, and README contain no upstream Yohann0617 links", () => {
+test("AppShell, LoginView, index.html, and README use OCI Flare branding, contain no upstream Yohann0617 links, and preserve encryption KDF constants", () => {
+  const html = fs.readFileSync("web-dist/index.html", "utf8");
   const shell = fs.readFileSync("web-dist/assets/AppShell-D9QnCYdV.js", "utf8");
   const login = fs.readFileSync("web-dist/assets/LoginView-BU-WcVZj.js", "utf8");
   const readme = fs.readFileSync("README.md", "utf8");
+  const backend = fs.readFileSync("dist/index.js", "utf8");
+
   for (const content of [shell, login, readme]) {
     assert.doesNotMatch(content, /Yohann0617/i);
   }
   assert.doesNotMatch(shell, /github\.com/i);
   assert.doesNotMatch(login, /github\.com/i);
-  assert.match(readme, /https:\/\/github\.com\/brsbsc\/oci-helper-serverless-cf/);
+  assert.match(html, /<title>OCI Flare<\/title>/);
+  assert.match(shell, /"OCI Flare"/);
+  assert.match(login, /"OCI Flare"/);
+  assert.match(readme, /https:\/\/github\.com\/brsbsc\/oci-flare/);
+
+  // Guardrail: HKDF & legacy key derivation salts MUST remain untouched for D1 data compatibility
+  assert.match(backend, /"oci-helper-serverless:enc:v2:aes-gcm"/);
+  assert.match(backend, /`oci-helper-serverless:\$\{secret\}`/);
 });

@@ -61,8 +61,8 @@ function runCli() {
   const baseToml = fs.readFileSync(basePath, "utf8");
   const rendered = buildDeployConfig(baseToml, process.env);
 
-  const workerLabel = (process.env.WORKER_NAME || "oci-helper-serverless").trim();
-  const dbLabel = (process.env.D1_DATABASE_NAME || "oci-helper-serverless").trim();
+  const workerLabel = (process.env.WORKER_NAME || "oci-flare").trim();
+  const dbLabel = (process.env.D1_DATABASE_NAME || "oci-flare").trim();
   console.log(
     `[cf-deploy] Deploying worker="${workerLabel}" with D1 DB="${dbLabel}" (${maskId(process.env.D1_DATABASE_ID)})`
   );

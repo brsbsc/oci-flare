@@ -9,8 +9,8 @@ test("buildDeployConfig injects D1_DATABASE_ID and keeps defaults when optional 
   const out = buildDeployConfig(BASE_TOML, {
     D1_DATABASE_ID: "12345678-1234-4123-8123-123456789abc",
   });
-  assert.match(out, /name\s*=\s*"oci-helper-serverless"/);
-  assert.match(out, /database_name\s*=\s*"oci-helper-serverless"/);
+  assert.match(out, /name\s*=\s*"oci-flare"/);
+  assert.match(out, /database_name\s*=\s*"oci-flare"/);
   assert.match(out, /database_id\s*=\s*"12345678-1234-4123-8123-123456789abc"/);
   assert.doesNotMatch(out, /REPLACE_WITH_YOUR_D1_DATABASE_ID/);
 });

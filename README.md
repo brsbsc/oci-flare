@@ -1,8 +1,8 @@
-# OCI Helper Serverless
+# OCI Flare
 
 运行在 **Cloudflare Workers + D1 + Durable Objects** 上的 Oracle Cloud (OCI) 多账号实例与自动化任务管理面板，开箱即用、零服务器运维成本。
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/brsbsc/oci-helper-serverless-cf)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/brsbsc/oci-flare)
 
 ---
 
@@ -35,10 +35,10 @@
 
 ### 方式一：一键按钮部署（最简，自动创建并绑定 D1）
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/brsbsc/oci-helper-serverless-cf)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/brsbsc/oci-flare)
 
 1. 点击上方 **Deploy to Cloudflare** 按钮并授权 GitHub 与 Cloudflare。
-2. 按向导填写 Worker 名称（默认 `oci-helper-serverless`），Cloudflare 会自动 Fork 仓库、创建 D1 数据库并完成绑定部署。
+2. 按向导填写 Worker 名称（默认 `oci-flare`），Cloudflare 会自动 Fork 仓库、创建 D1 数据库并完成绑定部署。
 3. 部署完成后按下方 **「部署后必做配置」** 设置 `KEY_SECRET` 与 `AUTH_PASSWORD`，访问 Worker 域名即可登录。
 
 ### 方式二：连接 GitHub 仓库自动构建（推荐长期维护，永不解绑 D1）
@@ -48,12 +48,12 @@
 1. **创建（或复用已有）D1 数据库**：
    - 进入 Cloudflare Dashboard → **Storage & Databases → D1 SQL Database**，创建数据库并复制它的 **Database ID（UUID）**（若已有历史数据库，直接复制旧库 ID 即可无缝继承原数据）。
 2. **连接 GitHub 仓库**：
-   - 进入 **Workers & Pages → 创建 → 连接 GitHub**，选择本仓库（`brsbsc/oci-helper-serverless-cf`）。
+   - 进入 **Workers & Pages → 创建 → 连接 GitHub**，选择本仓库（`brsbsc/oci-flare`）。
 3. **配置构建变量与命令（Worker → Settings → Build）**：
    - 在 **Build variables（构建变量）** 中添加（建议勾选 **Encrypt** 加密）：
      - `D1_DATABASE_ID` = `<你的 D1 Database ID>`（**必填**，缺失时会主动中止部署，防止误清远端 `DB` 绑定）
-     - `WORKER_NAME` = `<你的 Worker 名称>`（例如 `oci-helper-serverless-cf`；与默认 `oci-helper-serverless` 一致可不填）
-     - `D1_DATABASE_NAME` = `<你的 D1 数据库名称>`（与默认 `oci-helper-serverless` 一致可不填）
+     - `WORKER_NAME` = `<你的 Worker 名称>`（与默认 `oci-flare` 一致可不填；若从旧版升级，填原有 Worker 名称即可保持原域名与配置不变）
+     - `D1_DATABASE_NAME` = `<你的 D1 数据库名称>`（与默认 `oci-flare` 一致可不填）
    - **Build command（构建命令）**：留空即可
    - **Deploy command（部署命令）**：
      ```bash
@@ -71,11 +71,11 @@
 ### 方式三：本机命令行部署
 
 ```bash
-git clone https://github.com/brsbsc/oci-helper-serverless-cf.git
-cd oci-helper-serverless-cf
+git clone https://github.com/brsbsc/oci-flare.git
+cd oci-flare
 npm install -g wrangler
 wrangler login
-wrangler d1 create oci-helper-serverless   # 将返回的 database_id 填入本地 wrangler.toml（勿提交到公开仓库）
+wrangler d1 create oci-flare   # 将返回的 database_id 填入本地 wrangler.toml（勿提交到公开仓库）
 wrangler deploy
 ```
 

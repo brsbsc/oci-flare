@@ -694,7 +694,7 @@ test("#5 POST /api/login enforces per-IP 429 rate limit, caps TG failure alerts 
       const gen = await apiJson(env, ctx, "/api/sys/totp/generate", {
         method: "POST",
         headers: { authorization: `Bearer ${freshToken}` },
-        body: { account: "admin", issuer: "OCI Helper" },
+        body: { account: "admin", issuer: "OCI Flare" },
       });
       assert.equal(gen.status, 200);
       assert.ok(gen.data.secret);

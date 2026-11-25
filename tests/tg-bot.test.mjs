@@ -418,7 +418,7 @@ test("POST /api/tg/webhook uses ctx.waitUntil, sends /start and /help replies, a
   assert.match(tgCalls[0].url, /\/sendMessage$/);
   assert.equal(tgCalls[0].body.chat_id, "10001");
   assert.equal(tgCalls[0].body.parse_mode, "HTML");
-  assert.match(tgCalls[0].body.text, /OCI Helper/);
+  assert.match(tgCalls[0].body.text, /OCI Flare/);
 
   // Verify any callback_data in reply_markup is <= 64 bytes
   const rows = tgCalls[0].body.reply_markup?.inline_keyboard || [];
@@ -721,7 +721,7 @@ test("handleTelegramUpdate is directly testable for /start and /help", async () 
     tgFetch
   );
   assert.equal(sent.length, 1);
-  assert.match(sent[0].body.text, /OCI Helper/);
+  assert.match(sent[0].body.text, /OCI Flare/);
 });
 
 test("handleTelegramUpdate and POST /api/tg/webhook fail closed when notify.tg_chat_id is empty", async () => {
@@ -1078,7 +1078,7 @@ test("/status and /status@MyOciBot return aggregate overview with HTML escaping 
   for (const call of calls) {
     assert.equal(call.method, "sendMessage");
     assert.equal(call.body.parse_mode, "HTML");
-    assert.match(call.body.text, /OCI Helper 总览/);
+    assert.match(call.body.text, /OCI Flare 总览/);
     assert.match(call.body.text, /2/); // 2 configs / 2 tasks
     assert.match(call.body.text, /1/); // 1 valid / 1 invalid / 1 running
     assertAllButtonsValid(call.body.reply_markup);

@@ -365,7 +365,7 @@ function buildHelpMessage() {
   return {
     text: truncateTelegramText(
       [
-        "<b>ℹ️ OCI Helper Bot 指令说明</b>",
+        "<b>ℹ️ OCI Flare Bot 指令说明</b>",
         "",
         "• /start — 打开主菜单与运行总览",
         "• /status — 查看全局配置与任务统计",
@@ -414,7 +414,7 @@ async function buildOverviewView(app, deps, env, ctx) {
   return {
     text: truncateTelegramText(
       [
-        "<b>📊 OCI Helper 总览</b>",
+        "<b>📊 OCI Flare 总览</b>",
         "",
         `☁️ OCI 配置：${cfgTotal} 个（有效 ${cfgValid} · 失效 ${cfgInvalid}）`,
         `🚀 抢机任务：${launchTotal} 个（运行中 ${launchRunning}）`,

@@ -1,8 +1,8 @@
 {
-  "name": "oci-helper-serverless-deploy",
+  "name": "oci-flare",
   "private": true,
   "version": "1.0.0",
-  "description": "OCI Helper Serverless - 一键部署到 Cloudflare",
+  "description": "OCI Flare - 运行在 Cloudflare Workers + D1 上的 OCI 多账号管理面板",
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",

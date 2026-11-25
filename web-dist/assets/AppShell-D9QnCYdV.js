@@ -90,8 +90,8 @@ const Ve=defineComponent({
             createElementVNode("div",{class:normalizeClass(["flex items-center gap-2.5",collapsed.value?"justify-center":""])},[
               createElementVNode("div",{class:"brand-mark size-9"},[createVNode(unref(CpuIcon),{class:"size-5"})]),
               collapsed.value?createCommentVNode("",!0):(openBlock(),createElementBlock("div",{key:0,class:"min-w-0 flex-1"},[
-                createElementVNode("div",{class:"truncate text-sm font-semibold tracking-wide text-white"},"OCI Helper"),
-                createElementVNode("div",{class:"truncate text-[11px] text-slate-500"},"Cloudflare Edition")
+                createElementVNode("div",{class:"truncate text-sm font-semibold tracking-wide text-white"},"OCI Flare"),
+                createElementVNode("div",{class:"truncate text-[11px] text-slate-500"},"Edge Console")
               ])),
               collapsed.value?createCommentVNode("",!0):(openBlock(),createElementBlock("button",{key:1,type:"button",class:"header-icon-btn shrink-0",title:"收起侧边栏","aria-label":"收起侧边栏",onClick:toggleSidebar},[createVNode(unref(ChevronLeft),{class:"size-4"})]))
             ],2),
@@ -121,7 +121,7 @@ const Ve=defineComponent({
               createElementVNode("div",{class:"flex min-w-0 items-center gap-2"},[
                 createElementVNode("button",{type:"button",class:"header-icon-btn shrink-0 md:hidden",title:"打开菜单","aria-label":"打开菜单",onClick:()=>{mobileOpen.value=!0}},[createVNode(unref(MenuIcon),{class:"size-5"})]),
                 createElementVNode("div",{class:"min-w-0"},[
-                  createElementVNode("h1",{class:"truncate text-base font-semibold text-white md:text-lg"},toDisplayString(unref(route).meta.title||"OCI Helper"),1),
+                  createElementVNode("h1",{class:"truncate text-base font-semibold text-white md:text-lg"},toDisplayString(unref(route).meta.title||"OCI Flare"),1),
                   createElementVNode("p",{class:"hidden truncate text-xs text-slate-500 sm:block"},toDisplayString(unref(route).meta.desc||""),1)
                 ])
               ]),
@@ -240,8 +240,8 @@ const Ve=defineComponent({
                   createElementVNode("div",{class:"flex items-center gap-2.5"},[
                     createElementVNode("div",{class:"brand-mark size-9"},[createVNode(unref(CpuIcon),{class:"size-5"})]),
                     createElementVNode("div",null,[
-                      createElementVNode("div",{class:"text-sm font-semibold text-white"},"OCI Helper"),
-                      createElementVNode("div",{class:"text-[11px] text-slate-500"},"Cloudflare Edition")
+                      createElementVNode("div",{class:"text-sm font-semibold text-white"},"OCI Flare"),
+                      createElementVNode("div",{class:"text-[11px] text-slate-500"},"Edge Console")
                     ])
                   ]),
                   createElementVNode("button",{type:"button",class:"header-icon-btn",title:"关闭菜单","aria-label":"关闭菜单",onClick:()=>{mobileOpen.value=!1}},[createVNode(unref(XIcon),{class:"size-4"})])

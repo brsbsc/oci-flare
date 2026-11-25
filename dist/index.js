@@ -201150,7 +201150,7 @@ function generateSecret(bytes = 20) {
   return out;
 }
 __name(generateSecret, "generateSecret");
-function otpauthUrl(secret, account = "admin", issuer = "OCI Helper") {
+function otpauthUrl(secret, account = "admin", issuer = "OCI Flare") {
   const enc2 = encodeURIComponent;
   const label = `${enc2(issuer)}:${enc2(account)}`;
   const query = [
@@ -204260,7 +204260,7 @@ app.post("/api/sys/totp/generate", async (c) => {
   const secret = generateSecret();
   const account = (body.account ?? "").trim() || "admin";
   const savedIssuer = await sysGet(c.env, "mfa.issuer").catch(() => null);
-  const issuer = (body.issuer ?? "").trim() || savedIssuer || "OCI Helper";
+  const issuer = (body.issuer ?? "").trim() || savedIssuer || "OCI Flare";
   return c.json({ secret, account, issuer, otpauth: otpauthUrl(secret, account, issuer) });
 });
 app.get("/api/sys/google", async (c) => {
@@ -204311,7 +204311,7 @@ app.post("/api/sys/notify-test", async (c) => {
   if (!token || !chatId) return badRequest("\u8BF7\u5148\u914D\u7F6E Telegram Bot Token \u548C Chat ID");
   const body = await c.req.json().catch(() => ({}));
   try {
-    await sendTelegram(token, chatId, body.text || "OCI Helper Serverless \u6D4B\u8BD5\u6D88\u606F");
+    await sendTelegram(token, chatId, body.text || "OCI Flare \u6D4B\u8BD5\u6D88\u606F");
     return c.json({ ok: true });
   } catch (e) {
     return Response.json({ error: e?.message ?? String(e) }, { status: 400 });
