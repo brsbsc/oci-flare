@@ -111,6 +111,18 @@ Allow group <你的组> to inspect limits in tenancy
 
 ---
 
+## Telegram 机器人双向交互（可选）
+
+1. **一键开启**：先在面板 **系统设置** 底部保存 `Telegram Bot Token` 与 `Telegram Chat ID`，再在「Telegram 通知」卡片点击 **开启 TG 交互**，系统会自动以当前 HTTPS 域名注册 Webhook、生成加密 Secret Token 并同步 Bot 指令菜单；点击 **关闭 TG 交互** 即可注销并清理。
+2. **支持指令与交互面板**：
+   - `/start`、`/help`：查看功能说明与快捷导航
+   - `/status`：查看账号配置、抢机与换 IP 任务总览
+   - `/cfgs`：配置列表翻页、账号测活、实例状态查询与启停/重启/一键换 IP
+   - `/tasks`：抢机与换 IP 任务的暂停/恢复与立即执行
+3. **安全保护**：Webhook 请求强制通过 `X-Telegram-Bot-Api-Secret-Token` 常量时间验签，并严格校验单一 `Chat ID` 精确白名单；关机、重启、换 IP 与恢复换 IP 任务等高影响操作均需内联按钮二次确认；高危操作（删除配置、终止实例、删除任务）不开放给机器人执行。
+
+---
+
 ## 目录结构与本地验证
 
 ```text
