@@ -8,27 +8,59 @@ import {
   parseCallbackData,
   callTelegramApi,
   callInternalApi,
+  resolveInstanceByShortId,
   registerTgBot,
   handleTelegramUpdate,
 } from "../dist/tg-bot.js";
 
+function matchRoutePattern(pattern, pathname) {
+  const patParts = pattern.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  if (patParts.length !== pathParts.length) return null;
+  const params = {};
+  for (let i = 0; i < patParts.length; i++) {
+    if (patParts[i].startsWith(":")) {
+      params[patParts[i].slice(1)] = decodeURIComponent(pathParts[i]);
+    } else if (patParts[i] !== pathParts[i]) {
+      return null;
+    }
+  }
+  return params;
+}
+
 function createMockRouter() {
-  const routes = new Map();
+  const routes = [];
+  function add(method, path, handler) {
+    routes.push({ method, path, handler });
+  }
   const app = {
     get(path, handler) {
-      routes.set(`GET ${path}`, handler);
+      add("GET", path, handler);
     },
     post(path, handler) {
-      routes.set(`POST ${path}`, handler);
+      add("POST", path, handler);
+    },
+    patch(path, handler) {
+      add("PATCH", path, handler);
     },
     delete(path, handler) {
-      routes.set(`DELETE ${path}`, handler);
+      add("DELETE", path, handler);
     },
     async fetch(request, env = {}, executionCtx) {
       const url = new URL(request.url);
-      const key = `${request.method.toUpperCase()} ${url.pathname}`;
-      const handler = routes.get(key);
-      if (!handler) {
+      const method = request.method.toUpperCase();
+      let matched = null;
+      let params = {};
+      for (const route of routes) {
+        if (route.method !== method) continue;
+        const p = matchRoutePattern(route.path, url.pathname);
+        if (p) {
+          matched = route;
+          params = p;
+          break;
+        }
+      }
+      if (!matched) {
         return Response.json({ error: "Not Found" }, { status: 404 });
       }
       const c = {
@@ -39,6 +71,12 @@ function createMockRouter() {
           path: url.pathname,
           header(name) {
             return request.headers.get(name) ?? undefined;
+          },
+          param(name) {
+            return params[name];
+          },
+          query(name) {
+            return url.searchParams.get(name) ?? undefined;
           },
           async json() {
             return request.clone().json();
@@ -57,7 +95,7 @@ function createMockRouter() {
           throw new Error("This context has no ExecutionContext");
         },
       });
-      return handler(c);
+      return matched.handler(c);
     },
   };
   return app;
@@ -728,4 +766,896 @@ test("handleTelegramUpdate and POST /api/tg/webhook fail closed when notify.tg_c
     assert.deepEqual(await res.json(), { ok: true });
     assert.equal(tgCalls.length, 0);
   }
+});
+
+
+function assertAllButtonsValid(replyMarkup) {
+  const rows = replyMarkup?.inline_keyboard || [];
+  for (const row of rows) {
+    for (const btn of row) {
+      if (btn.callback_data !== undefined) {
+        assert.ok(
+          Buffer.byteLength(btn.callback_data, "utf8") <= 64,
+          `callback_data exceeds 64 bytes: ${btn.callback_data}`
+        );
+      }
+    }
+  }
+}
+
+function collectCallbackDatas(replyMarkup) {
+  const out = [];
+  for (const row of replyMarkup?.inline_keyboard || []) {
+    for (const btn of row) {
+      if (btn.callback_data) out.push(btn.callback_data);
+    }
+  }
+  return out;
+}
+
+function createInteractiveMockBackend() {
+  const app = createMockRouter();
+  const mutations = [];
+  const OCID_1 =
+    "ocid1.instance.oc1.ap-singapore-1.anuwgljr76q54nyczzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz1";
+  const OCID_2 =
+    "ocid1.instance.oc1.ap-singapore-1.anuwgljr76q54nyczzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz2";
+
+  const cfgs = [
+    {
+      id: "cfg_AbCdEfGhIjK",
+      name: "Prod <script>&1",
+      region: "ap-singapore-1",
+      regions: [{ regionName: "ap-singapore-1" }, { regionName: "ap-tokyo-1" }],
+      status: "active",
+      planType: "PAID",
+      taskCount: 2,
+      runningTaskCount: 1,
+      lastCheckedAt: "2026-11-25T01:00:00Z",
+      lastError: null,
+      privateKey: "-----BEGIN PRIVATE KEY-----\nSECRET_KEY_DATA\n-----END PRIVATE KEY-----",
+      passphrase: "secret-passphrase",
+    },
+    {
+      id: "cfg_22222222222",
+      name: "Backup & Test",
+      region: "us-ashburn-1",
+      regions: [{ regionName: "us-ashburn-1" }],
+      status: "invalid",
+      planType: "FREE_TIER",
+      taskCount: 0,
+      runningTaskCount: 0,
+      lastCheckedAt: "2026-11-25T00:30:00Z",
+      lastError: "Auth <failed> & expired",
+    },
+  ];
+
+  const instancesByCfg = {
+    cfg_AbCdEfGhIjK: [
+      {
+        id: OCID_1,
+        displayName: "arm-<prod>&01",
+        lifecycleState: "RUNNING",
+        shape: "VM.Standard.A1.Flex",
+        ocpus: 4,
+        memoryInGBs: 24,
+        publicIps: ["1.2.3.4"],
+        availabilityDomain: "AD-1",
+      },
+      {
+        id: OCID_2,
+        name: "amd-free-02",
+        state: "STOPPED",
+        shape: "VM.Standard.E2.1.Micro",
+        ocpus: 1,
+        memoryGb: 1,
+        publicIps: [],
+        availabilityDomain: "AD-2",
+      },
+    ],
+  };
+
+  const launchTasks = [
+    {
+      id: "task_11111111111",
+      cfgId: "cfg_AbCdEfGhIjK",
+      cfgName: "Prod <script>&1",
+      name: "ARM <4C24G>&",
+      region: "ap-singapore-1",
+      shape: "VM.Standard.A1.Flex",
+      ocpus: 4,
+      memoryGb: 24,
+      targetCount: 1,
+      successCount: 0,
+      attemptCount: 12,
+      intervalSec: 60,
+      status: "running",
+      lastMessage: "Out of host capacity",
+      lastError: null,
+      rootPassword: "SuperSecretRootPassword!",
+      sshPrivateKey: "SECRET_SSH_PRIV",
+    },
+    {
+      id: "task_22222222222",
+      cfgId: "cfg_AbCdEfGhIjK",
+      cfgName: "Prod <script>&1",
+      name: "AMD Micro",
+      region: "ap-singapore-1",
+      shape: "VM.Standard.E2.1.Micro",
+      ocpus: 1,
+      memoryGb: 1,
+      targetCount: 1,
+      successCount: 1,
+      attemptCount: 3,
+      intervalSec: 120,
+      status: "paused",
+      lastMessage: "Completed",
+      lastError: null,
+    },
+  ];
+
+  const ipTasks = [
+    {
+      id: "ipt_11111111111",
+      cfgId: "cfg_AbCdEfGhIjK",
+      cfgName: "Prod <script>&1",
+      instanceId: OCID_1,
+      instanceName: "arm-<prod>&01",
+      region: "ap-singapore-1",
+      ipVersion: "ipv4",
+      intervalSec: 60,
+      status: "running",
+      lastIp: "1.2.3.4",
+      changeCount: 2,
+      lastError: null,
+    },
+    {
+      id: "ipt_22222222222",
+      cfgId: "cfg_AbCdEfGhIjK",
+      cfgName: "Prod <script>&1",
+      instanceId: OCID_2,
+      instanceName: "amd-free-02",
+      region: "ap-singapore-1",
+      ipVersion: "ipv4",
+      intervalSec: 120,
+      status: "paused",
+      lastIp: "5.6.7.8",
+      attemptCount: 4,
+      lastError: "Rate limited & retry",
+    },
+  ];
+
+  app.get("/api/cfgs", async (c) => {
+    const page = Math.max(1, Number(c.req.query("page") ?? 1));
+    const pageSize = Math.max(1, Number(c.req.query("pageSize") ?? 10));
+    const start = (page - 1) * pageSize;
+    return c.json({ items: cfgs.slice(start, start + pageSize), total: cfgs.length, page, pageSize });
+  });
+
+  app.get("/api/cfgs/:id", async (c) => {
+    const item = cfgs.find((x) => x.id === c.req.param("id"));
+    if (!item) return c.json({ error: "Not found" }, 404);
+    return c.json({ item });
+  });
+
+  app.post("/api/cfgs/:id/check", async (c) => {
+    const id = c.req.param("id");
+    mutations.push({ type: "cfg_check", id });
+    if (id === "cfg_22222222222") {
+      return c.json({ error: "Invalid credentials <401>" }, 400);
+    }
+    return c.json({
+      ok: true,
+      tenancyName: "my-tenancy",
+      regions: [{ regionName: "ap-singapore-1" }, { regionName: "ap-tokyo-1" }],
+      availabilityDomains: [{ name: "AD-1" }, { name: "AD-2" }, { name: "AD-3" }],
+    });
+  });
+
+  app.get("/api/cfgs/:id/instances", async (c) => {
+    const id = c.req.param("id");
+    const cfg = cfgs.find((x) => x.id === id);
+    if (!cfg) return c.json({ error: "Not found" }, 404);
+    mutations.push({ type: "list_instances", id });
+    return c.json({ items: instancesByCfg[id] || [], region: cfg.region });
+  });
+
+  app.post("/api/cfgs/:id/instances/:iid/action", async (c) => {
+    const body = await c.req.json();
+    mutations.push({
+      type: "instance_action",
+      cfgId: c.req.param("id"),
+      iid: c.req.param("iid"),
+      action: body.action,
+    });
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/cfgs/:id/instances/:iid/change-ip", async (c) => {
+    mutations.push({
+      type: "instance_change_ip",
+      cfgId: c.req.param("id"),
+      iid: c.req.param("iid"),
+    });
+    return c.json({ ok: true, ip: "9.8.7.6" });
+  });
+
+  app.get("/api/tasks", async (c) => {
+    const page = Math.max(1, Number(c.req.query("page") ?? 1));
+    const pageSize = Math.max(1, Number(c.req.query("pageSize") ?? 10));
+    const start = (page - 1) * pageSize;
+    return c.json({
+      items: launchTasks.slice(start, start + pageSize),
+      total: launchTasks.length,
+      page,
+      pageSize,
+    });
+  });
+
+  app.patch("/api/tasks/:id", async (c) => {
+    const id = c.req.param("id");
+    const body = await c.req.json();
+    mutations.push({ type: "patch_task", id, status: body.status });
+    const t = launchTasks.find((x) => x.id === id);
+    if (t && body.status) t.status = body.status;
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/tasks/:id/run", async (c) => {
+    const id = c.req.param("id");
+    mutations.push({ type: "run_task", id });
+    return c.json({ ok: true, message: "Capacity checked: retrying next interval" });
+  });
+
+  app.get("/api/ip-tasks", async (c) => {
+    const page = Math.max(1, Number(c.req.query("page") ?? 1));
+    const pageSize = Math.max(1, Number(c.req.query("pageSize") ?? 20));
+    const start = (page - 1) * pageSize;
+    return c.json({
+      items: ipTasks.slice(start, start + pageSize),
+      total: ipTasks.length,
+      page,
+      pageSize,
+    });
+  });
+
+  app.patch("/api/ip-tasks/:tid", async (c) => {
+    const tid = c.req.param("tid");
+    const body = await c.req.json();
+    mutations.push({ type: "patch_ip_task", tid, status: body.status });
+    const t = ipTasks.find((x) => x.id === tid);
+    if (t && body.status) t.status = body.status;
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/ip-tasks/:tid/run", async (c) => {
+    const tid = c.req.param("tid");
+    mutations.push({ type: "run_ip_task", tid });
+    return c.json({ ok: true, ip: "11.22.33.44", message: "IPv4 changed to 11.22.33.44" });
+  });
+
+  return { app, mutations, cfgs, instancesByCfg, launchTasks, ipTasks, OCID_1, OCID_2 };
+}
+
+function createTgSpy() {
+  const calls = [];
+  const tgFetch = async (url, init) => {
+    const method = url.split("/").pop();
+    const body = JSON.parse(init.body);
+    calls.push({ method, body });
+    return Response.json({ ok: true, result: { message_id: 500 + calls.length } });
+  };
+  return { calls, tgFetch };
+}
+
+test("/status and /status@MyOciBot return aggregate overview with HTML escaping and <= 64 byte buttons", async () => {
+  const { app } = createInteractiveMockBackend();
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  for (const cmdText of ["/status", "/status@MyOciBot"]) {
+    await handleTelegramUpdate(
+      { update_id: 10, message: { chat: { id: 10001 }, from: { is_bot: false }, text: cmdText } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+  }
+
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.method, "sendMessage");
+    assert.equal(call.body.parse_mode, "HTML");
+    assert.match(call.body.text, /OCI Helper 总览/);
+    assert.match(call.body.text, /2/); // 2 configs / 2 tasks
+    assert.match(call.body.text, /1/); // 1 valid / 1 invalid / 1 running
+    assertAllButtonsValid(call.body.reply_markup);
+    const dataList = collectCallbackDatas(call.body.reply_markup);
+    assert.ok(dataList.includes("c:ls:1"));
+    assert.ok(dataList.includes("t:ls:l:1"));
+    assert.ok(dataList.includes("m:st"));
+  }
+});
+
+test("/cfgs -> c:v:<cfgId> -> c:chk:<cfgId> escapes HTML, answers callback immediately, shows loading state, and hides secrets", async () => {
+  const { app, mutations } = createInteractiveMockBackend();
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  // 1. /cfgs command
+  await handleTelegramUpdate(
+    { update_id: 20, message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/cfgs" } },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "sendMessage");
+  assert.match(calls[0].body.text, /Prod &lt;script&gt;&amp;1/);
+  assert.equal(calls[0].body.text.includes("<script>"), false);
+  assertAllButtonsValid(calls[0].body.reply_markup);
+  assert.ok(collectCallbackDatas(calls[0].body.reply_markup).includes("c:v:cfg_AbCdEfGhIjK"));
+
+  // 2. c:v:cfg_AbCdEfGhIjK
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 21,
+      callback_query: {
+        id: "cq-1",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 77 },
+        data: "c:v:cfg_AbCdEfGhIjK",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.equal(calls[0].method, "answerCallbackQuery");
+  assert.equal(calls[0].body.callback_query_id, "cq-1");
+  const detailCall = calls.find((c) => c.method === "editMessageText");
+  assert.ok(detailCall);
+  assert.match(detailCall.body.text, /Prod &lt;script&gt;&amp;1/);
+  assert.match(detailCall.body.text, /ap-singapore-1/);
+  assert.equal(detailCall.body.text.includes("SECRET_KEY_DATA"), false);
+  assert.equal(detailCall.body.text.includes("secret-passphrase"), false);
+  assertAllButtonsValid(detailCall.body.reply_markup);
+  assert.ok(collectCallbackDatas(detailCall.body.reply_markup).includes("c:chk:cfg_AbCdEfGhIjK"));
+  assert.ok(collectCallbackDatas(detailCall.body.reply_markup).includes("c:ins:cfg_AbCdEfGhIjK:1"));
+
+  // 3. c:chk:cfg_AbCdEfGhIjK -> answerCallbackQuery -> loading edit -> POST check -> result edit
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 22,
+      callback_query: {
+        id: "cq-2",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 77 },
+        data: "c:chk:cfg_AbCdEfGhIjK",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.equal(calls[0].method, "answerCallbackQuery");
+  const edits = calls.filter((c) => c.method === "editMessageText");
+  assert.ok(edits.length >= 2);
+  assert.match(edits[0].body.text, /⏳/);
+  const finalEdit = edits[edits.length - 1];
+  assert.match(finalEdit.body.text, /2/); // 2 regions
+  assert.match(finalEdit.body.text, /3/); // 3 ADs
+  assert.equal(mutations.some((m) => m.type === "cfg_check" && m.id === "cfg_AbCdEfGhIjK"), true);
+  assertAllButtonsValid(finalEdit.body.reply_markup);
+});
+
+test("c:ins:<cfgId>:1 persists tg.imap:<cfgId>, hashes 88-byte OCIDs to 8-char shortIds, and displays config region", async () => {
+  const { app, OCID_1, OCID_2 } = createInteractiveMockBackend();
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  assert.equal(Buffer.byteLength(OCID_1, "utf8"), 88);
+  const short1 = await shortInstanceId(OCID_1);
+  const short2 = await shortInstanceId(OCID_2);
+
+  await handleTelegramUpdate(
+    {
+      update_id: 30,
+      callback_query: {
+        id: "cq-ins",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 88 },
+        data: "c:ins:cfg_AbCdEfGhIjK:1",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+
+  assert.equal(calls[0].method, "answerCallbackQuery");
+  const finalEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.ok(finalEdit);
+  assert.match(finalEdit.body.text, /ap-singapore-1/);
+  assert.match(finalEdit.body.text, /arm-&lt;prod&gt;&amp;01/);
+  assert.match(finalEdit.body.text, /1\.2\.3\.4/);
+  assertAllButtonsValid(finalEdit.body.reply_markup);
+
+  const btnDatas = collectCallbackDatas(finalEdit.body.reply_markup);
+  assert.ok(btnDatas.includes(`i:v:cfg_AbCdEfGhIjK:${short1}`));
+  assert.ok(btnDatas.includes(`i:v:cfg_AbCdEfGhIjK:${short2}`));
+
+  const cachedRaw = await deps.sysGet({}, "tg.imap:cfg_AbCdEfGhIjK");
+  assert.ok(cachedRaw);
+  const cached = JSON.parse(cachedRaw);
+  assert.equal(cached.map[short1].id, OCID_1);
+  assert.equal(cached.map[short2].id, OCID_2);
+});
+
+test("Instance actions enforce 2-step confirmation for sp/rs/ip while st runs directly, and resolveInstanceByShortId falls back when cache is cleared", async () => {
+  const { app, mutations, OCID_1 } = createInteractiveMockBackend();
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+  const short1 = await shortInstanceId(OCID_1);
+
+  // Stale button fallback: cache empty -> resolveInstanceByShortId fetches instances and persists cache
+  const resolved = await resolveInstanceByShortId(app, deps, {}, null, "cfg_AbCdEfGhIjK", short1);
+  assert.equal(resolved.id, OCID_1);
+  assert.equal(resolved.region, "ap-singapore-1");
+  assert.ok(await deps.sysGet({}, "tg.imap:cfg_AbCdEfGhIjK"));
+
+  // i:v shows detail + buttons (st is i:do:st, sp/rs/ip are i:ask:*)
+  await handleTelegramUpdate(
+    {
+      update_id: 40,
+      callback_query: {
+        id: "cq-iv",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 90 },
+        data: `i:v:cfg_AbCdEfGhIjK:${short1}`,
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const ivEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  const ivBtns = collectCallbackDatas(ivEdit.body.reply_markup);
+  assert.ok(ivBtns.includes(`i:do:st:cfg_AbCdEfGhIjK:${short1}`));
+  assert.ok(ivBtns.includes(`i:ask:sp:cfg_AbCdEfGhIjK:${short1}`));
+  assert.ok(ivBtns.includes(`i:ask:rs:cfg_AbCdEfGhIjK:${short1}`));
+  assert.ok(ivBtns.includes(`i:ask:ip:cfg_AbCdEfGhIjK:${short1}`));
+  assertAllButtonsValid(ivEdit.body.reply_markup);
+
+  // i:ask:sp, i:ask:rs, i:ask:ip MUST do ZERO mutating OCI calls
+  mutations.length = 0;
+  for (const op of ["sp", "rs", "ip"]) {
+    calls.length = 0;
+    await handleTelegramUpdate(
+      {
+        update_id: 41,
+        callback_query: {
+          id: `cq-ask-${op}`,
+          from: { is_bot: false },
+          message: { chat: { id: 10001 }, message_id: 90 },
+          data: `i:ask:${op}:cfg_AbCdEfGhIjK:${short1}`,
+        },
+      },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    const askEdit = calls.filter((c) => c.method === "editMessageText").pop();
+    const askBtns = collectCallbackDatas(askEdit.body.reply_markup);
+    assert.ok(askBtns.includes(`i:do:${op}:cfg_AbCdEfGhIjK:${short1}`));
+    assert.ok(askBtns.includes(`i:v:cfg_AbCdEfGhIjK:${short1}`));
+  }
+  assert.equal(
+    mutations.some((m) => m.type === "instance_action" || m.type === "instance_change_ip"),
+    false
+  );
+
+  // Clear cache before i:do:st to prove stale-button fallback works end-to-end!
+  await deps.sysSet({}, "tg.imap:cfg_AbCdEfGhIjK", "");
+  mutations.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 42,
+      callback_query: {
+        id: "cq-do-st",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 90 },
+        data: `i:do:st:cfg_AbCdEfGhIjK:${short1}`,
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "instance_action"),
+    { type: "instance_action", cfgId: "cfg_AbCdEfGhIjK", iid: OCID_1, action: "START" }
+  );
+
+  // Execute sp, rs, ip
+  for (const [op, expectedAction] of [
+    ["sp", "SOFTSTOP"],
+    ["rs", "SOFTRESET"],
+  ]) {
+    mutations.length = 0;
+    await handleTelegramUpdate(
+      {
+        update_id: 43,
+        callback_query: {
+          id: `cq-do-${op}`,
+          from: { is_bot: false },
+          message: { chat: { id: 10001 }, message_id: 90 },
+          data: `i:do:${op}:cfg_AbCdEfGhIjK:${short1}`,
+        },
+      },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.deepEqual(
+      mutations.find((m) => m.type === "instance_action"),
+      { type: "instance_action", cfgId: "cfg_AbCdEfGhIjK", iid: OCID_1, action: expectedAction }
+    );
+  }
+
+  mutations.length = 0;
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 44,
+      callback_query: {
+        id: "cq-do-ip",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 90 },
+        data: `i:do:ip:cfg_AbCdEfGhIjK:${short1}`,
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "instance_change_ip"),
+    { type: "instance_change_ip", cfgId: "cfg_AbCdEfGhIjK", iid: OCID_1 }
+  );
+  const ipDoneEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.match(ipDoneEdit.body.text, /9\.8\.7\.6/);
+});
+
+test("/tasks, launch task toggle/run, and IP task 2-step confirmation guards work end-to-end", async () => {
+  const { app, mutations } = createInteractiveMockBackend();
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  // 1. /tasks -> launch task list
+  await handleTelegramUpdate(
+    { update_id: 50, message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/tasks" } },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.equal(calls[0].method, "sendMessage");
+  assert.match(calls[0].body.text, /ARM &lt;4C24G&gt;&amp;/);
+  assertAllButtonsValid(calls[0].body.reply_markup);
+  assert.ok(collectCallbackDatas(calls[0].body.reply_markup).includes("t:ls:p:1"));
+  assert.ok(collectCallbackDatas(calls[0].body.reply_markup).includes("t:v:l:task_11111111111"));
+
+  // 2. Launch task detail -> never leak rootPassword/sshPrivateKey
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 51,
+      callback_query: {
+        id: "cq-tvl",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:v:l:task_11111111111",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const launchDetail = calls.find((c) => c.method === "editMessageText");
+  assert.equal(launchDetail.body.text.includes("SuperSecretRootPassword!"), false);
+  assert.equal(launchDetail.body.text.includes("SECRET_SSH_PRIV"), false);
+  assert.ok(collectCallbackDatas(launchDetail.body.reply_markup).includes("t:tog:l:task_11111111111"));
+  assert.ok(collectCallbackDatas(launchDetail.body.reply_markup).includes("t:run:l:task_11111111111"));
+
+  // 3. Toggle launch task (running -> paused) & run launch task
+  mutations.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 52,
+      callback_query: {
+        id: "cq-togl",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:tog:l:task_11111111111",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "patch_task"),
+    { type: "patch_task", id: "task_11111111111", status: "paused" }
+  );
+
+  mutations.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 53,
+      callback_query: {
+        id: "cq-runl",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:run:l:task_11111111111",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "run_task"),
+    { type: "run_task", id: "task_11111111111" }
+  );
+
+  // 4. IP tasks list (t:ls:p:1) & paused IP task detail (t:v:p:ipt_22222222222)
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 54,
+      callback_query: {
+        id: "cq-tlsp",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:ls:p:1",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const ipListEdit = calls.find((c) => c.method === "editMessageText");
+  assert.ok(collectCallbackDatas(ipListEdit.body.reply_markup).includes("t:v:p:ipt_11111111111"));
+  assert.ok(collectCallbackDatas(ipListEdit.body.reply_markup).includes("t:v:p:ipt_22222222222"));
+
+  // Paused IP task detail shows t:ask:res (not t:tog:p!)
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 55,
+      callback_query: {
+        id: "cq-tvp2",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:v:p:ipt_22222222222",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const pausedIpDetail = calls.find((c) => c.method === "editMessageText");
+  const pausedBtns = collectCallbackDatas(pausedIpDetail.body.reply_markup);
+  assert.ok(pausedBtns.includes("t:ask:res:ipt_22222222222"));
+  assert.ok(pausedBtns.includes("t:ask:run:ipt_22222222222"));
+  assert.equal(pausedBtns.includes("t:tog:p:ipt_22222222222"), false);
+
+  // Defense-in-depth: calling t:tog:p on paused IP task MUST NOT mutate, redirects to confirm!
+  mutations.length = 0;
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 56,
+      callback_query: {
+        id: "cq-togp-paused",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:tog:p:ipt_22222222222",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.equal(mutations.length, 0);
+  const redirectEdit = calls.find((c) => c.method === "editMessageText");
+  assert.ok(collectCallbackDatas(redirectEdit.body.reply_markup).includes("t:do:res:ipt_22222222222"));
+
+  // Calling t:tog:p on running IP task pauses immediately
+  mutations.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 57,
+      callback_query: {
+        id: "cq-togp-running",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:tog:p:ipt_11111111111",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "patch_ip_task"),
+    { type: "patch_ip_task", tid: "ipt_11111111111", status: "paused" }
+  );
+
+  // t:ask:run and t:ask:res do zero mutations; t:do:run and t:do:res mutate
+  mutations.length = 0;
+  for (const op of ["run", "res"]) {
+    calls.length = 0;
+    await handleTelegramUpdate(
+      {
+        update_id: 58,
+        callback_query: {
+          id: `cq-task-${op}`,
+          from: { is_bot: false },
+          message: { chat: { id: 10001 }, message_id: 91 },
+          data: `t:ask:${op}:ipt_22222222222`,
+        },
+      },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    const askEdit = calls.find((c) => c.method === "editMessageText");
+    assert.ok(collectCallbackDatas(askEdit.body.reply_markup).includes(`t:do:${op}:ipt_22222222222`));
+  }
+  assert.equal(mutations.length, 0);
+
+  await handleTelegramUpdate(
+    {
+      update_id: 59,
+      callback_query: {
+        id: "cq-tdo-res",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:do:res:ipt_22222222222",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "patch_ip_task"),
+    { type: "patch_ip_task", tid: "ipt_22222222222", status: "running" }
+  );
+
+  mutations.length = 0;
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 60,
+      callback_query: {
+        id: "cq-tdo-run",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 91 },
+        data: "t:do:run:ipt_22222222222",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  assert.deepEqual(
+    mutations.find((m) => m.type === "run_ip_task"),
+    { type: "run_ip_task", tid: "ipt_22222222222" }
+  );
+  const ipRunEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.match(ipRunEdit.body.text, /11\.22\.33\.44/);
+});
+
+test("Security hygiene: unknown callback_data does not throw, and long HTML output truncates <= 3800 chars without unclosed tags", async () => {
+  const { app } = createInteractiveMockBackend();
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  for (const badData of ["", "bad", "z:unknown:123", "c:v", "i:do:unknown:cfg_1:abcd1234"]) {
+    await handleTelegramUpdate(
+      {
+        update_id: 70,
+        callback_query: {
+          id: "cq-bad",
+          from: { is_bot: false },
+          message: { chat: { id: 10001 }, message_id: 92 },
+          data: badData,
+        },
+      },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+  }
+  assert.equal(calls.filter((c) => c.method === "answerCallbackQuery").length, 5);
+
+  // Very long HTML message truncation never leaves unclosed HTML tags or slices mid-tag
+  const longHtml = `<b>Header</b>\n<code>${"x".repeat(4500)}</code>`;
+  const truncated = truncateTelegramText(longHtml, 3800);
+  assert.ok(truncated.length <= 3800);
+  assert.ok(truncated.endsWith("…"));
+  assert.equal((truncated.match(/<code>/g) || []).length, (truncated.match(/<\/code>/g) || []).length);
+  assert.equal((truncated.match(/<b>/g) || []).length, (truncated.match(/<\/b>/g) || []).length);
+
+  // Slicing right inside a tag `<b` or `<b>`
+  const midTag = `hello <b>${"y".repeat(50)}</b>`;
+  const truncSmall = truncateTelegramText(midTag, 9);
+  assert.ok(truncSmall.length <= 9);
+  assert.equal(truncSmall.includes("<b"), false);
 });
