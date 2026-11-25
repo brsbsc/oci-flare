@@ -260,7 +260,7 @@ export async function handleTelegramUpdate(update, env, ctx, app, deps, tgFetch 
   if (!botToken) return;
 
   const allowedChatId = String((await deps.sysGet(env, "notify.tg_chat_id")) || "").trim();
-  if (allowedChatId && incomingChatId !== allowedChatId) return;
+  if (!allowedChatId || incomingChatId !== allowedChatId) return;
 
   if (cq?.id) {
     try {

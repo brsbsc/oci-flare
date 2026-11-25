@@ -678,3 +678,54 @@ test("handleTelegramUpdate is directly testable for /start and /help", async () 
   assert.equal(sent.length, 1);
   assert.match(sent[0].body.text, /OCI Helper/);
 });
+
+test("handleTelegramUpdate and POST /api/tg/webhook fail closed when notify.tg_chat_id is empty", async () => {
+  const secret = "g".repeat(64);
+  for (const emptyChatId of [undefined, "", "   "]) {
+    const app = createMockRouter();
+    const initial = {
+      "notify.tg_bot_token": "123:ABC",
+      "tg.webhook_secret": secret,
+    };
+    if (emptyChatId !== undefined) {
+      initial["notify.tg_chat_id"] = emptyChatId;
+    }
+    const deps = createMockDeps(initial);
+    const tgCalls = [];
+    const tgFetch = async (url, init) => {
+      tgCalls.push({ url, body: JSON.parse(init.body) });
+      return Response.json({ ok: true, result: { message_id: 1 } });
+    };
+    registerTgBot(app, deps, tgFetch);
+
+    // Direct call to handleTelegramUpdate must fail closed (0 Telegram API calls)
+    await handleTelegramUpdate(
+      { update_id: 1, message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/start" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.equal(tgCalls.length, 0);
+
+    // POST /api/tg/webhook must also silently drop with 200 and 0 Telegram API calls
+    const res = await app.fetch(
+      new Request("https://panel.example.com/api/tg/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Telegram-Bot-Api-Secret-Token": secret,
+        },
+        body: JSON.stringify({
+          update_id: 2,
+          message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/start" },
+        }),
+      }),
+      {}
+    );
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(tgCalls.length, 0);
+  }
+});
