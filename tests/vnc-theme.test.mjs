@@ -19,9 +19,8 @@ test("novnc/vnc.html syncs oci_mini_style and oci_mini_theme across all 6 modes 
   assert.match(html, /import RFB from '\.\/core\/rfb\.js'/);
 });
 
-test("untouched core runtime, backend, config, and 6 resource chunks remain byte-identical to spec base commit", () => {
+test("untouched core runtime, config, and 6 resource chunks remain byte-identical to spec base commit", () => {
   const forbidden = [
-    "dist/index.js",
     "wrangler.toml",
     "wrangler.import.toml",
     "package.json",
@@ -39,7 +38,7 @@ test("untouched core runtime, backend, config, and 6 resource chunks remain byte
   assert.equal(diff, "", `forbidden files modified:\n${diff}`);
 });
 
-test("all JavaScript assets in web-dist/assets pass node --check", () => {
+test("all JavaScript assets in web-dist/assets and Worker/deploy scripts pass node --check", () => {
   const files = fs
     .readdirSync("web-dist/assets")
     .filter((f) => f.endsWith(".js"))
@@ -48,4 +47,8 @@ test("all JavaScript assets in web-dist/assets pass node --check", () => {
     execFileSync(process.execPath, ["--check", f], { stdio: "pipe" });
   }
   assert.ok(files.length >= 30);
+
+  for (const workerFile of ["dist/index.js", "dist/tg-bot.js", "scripts/cf-deploy.mjs"]) {
+    execFileSync(process.execPath, ["--check", workerFile], { stdio: "pipe" });
+  }
 });

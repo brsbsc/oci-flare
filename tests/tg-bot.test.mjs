@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   constantTimeEqual,
   escapeHtml,
@@ -1658,4 +1659,273 @@ test("Security hygiene: unknown callback_data does not throw, and long HTML outp
   const truncSmall = truncateTelegramText(midTag, 9);
   assert.ok(truncSmall.length <= 9);
   assert.equal(truncSmall.includes("<b"), false);
+});
+
+function createInMemoryD1(initialRows = []) {
+  const rows = new Map(initialRows.map((r) => [r.key, { ...r }]));
+  return {
+    rows,
+    prepare(sql) {
+      let args = [];
+      const stmt = {
+        bind(...params) {
+          args = params;
+          return stmt;
+        },
+        async first() {
+          const allRes = await stmt.all();
+          return allRes.results[0] ?? null;
+        },
+        async all() {
+          if (sql.includes("FROM task")) {
+            return { results: [] };
+          }
+          if (sql.startsWith("SELECT value FROM sys_cfg WHERE key = ?")) {
+            const row = rows.get(args[0]);
+            return { results: row ? [{ value: row.value }] : [] };
+          }
+          if (sql.startsWith("SELECT key, value, updated_at FROM sys_cfg")) {
+            return { results: Array.from(rows.values()).map((r) => ({ ...r })) };
+          }
+          if (sql.startsWith("SELECT key, value FROM sys_cfg WHERE key LIKE ?")) {
+            const prefix = String(args[0] ?? "").replace(/%$/, "");
+            const matched = Array.from(rows.values())
+              .filter((r) => r.key.startsWith(prefix))
+              .map((r) => ({ key: r.key, value: r.value }));
+            return { results: matched };
+          }
+          throw new Error(`Unsupported D1 all() SQL in test mock: ${sql}`);
+        },
+        async run() {
+          if (sql.includes("INSERT INTO sys_cfg") && sql.includes("ON CONFLICT(key) DO UPDATE")) {
+            const [key, value, updated_at] = args;
+            rows.set(key, { key, value, updated_at });
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes("INSERT OR IGNORE INTO sys_cfg")) {
+            const [key, value, updated_at] = args;
+            if (!rows.has(key)) {
+              rows.set(key, { key, value, updated_at });
+              return { meta: { changes: 1 } };
+            }
+            return { meta: { changes: 0 } };
+          }
+          if (sql.startsWith("DELETE FROM sys_cfg WHERE key = ?")) {
+            const existed = rows.delete(args[0]);
+            return { meta: { changes: existed ? 1 : 0 } };
+          }
+          if (sql.includes("DELETE FROM sys_cfg WHERE key LIKE 'google.used:%'")) {
+            return { meta: { changes: 0 } };
+          }
+          if (sql.includes("DELETE FROM sys_cfg WHERE key LIKE 'tg.imap:%'")) {
+            const cutoff = String(args[0] ?? "");
+            let changes = 0;
+            for (const [k, v] of rows.entries()) {
+              if (k.startsWith("tg.imap:") && String(v.updated_at || "") < cutoff) {
+                rows.delete(k);
+                changes += 1;
+              }
+            }
+            return { meta: { changes } };
+          }
+          throw new Error(`Unsupported D1 run() SQL in test mock: ${sql}`);
+        },
+      };
+      return stmt;
+    },
+  };
+}
+
+test("dist/index.js hooks registerTgBot, SYS_DEFS hidden keys, PUBLIC_API_PATHS, and tg.imap:% cleanup cleanly", () => {
+  const src = fs.readFileSync("dist/index.js", "utf8");
+
+  assert.match(src.slice(0, 200), /import\s*\{\s*registerTgBot\s*\}\s*from\s*"\.\/tg-bot\.js";/);
+
+  const sysDefsMatch = src.match(/var SYS_DEFS = \[([\s\S]*?)\];/);
+  assert.ok(sysDefsMatch, "SYS_DEFS block should exist");
+  assert.match(
+    sysDefsMatch[1],
+    /\{\s*key:\s*"tg\.webhook_secret",\s*label:\s*"Telegram Webhook Secret",\s*secret:\s*true,\s*hidden:\s*true\s*\}/
+  );
+  assert.match(
+    sysDefsMatch[1],
+    /\{\s*key:\s*"tg\.webhook_url",\s*label:\s*"Telegram Webhook URL",\s*secret:\s*false,\s*hidden:\s*true\s*\}/
+  );
+
+  const publicPathsMatch = src.match(/var PUBLIC_API_PATHS =[\s\S]*?new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(publicPathsMatch, "PUBLIC_API_PATHS Set should exist");
+  assert.match(publicPathsMatch[1], /"\/api\/tg\/webhook"/);
+  assert.equal(publicPathsMatch[1].includes("/api/tg/webhook-config"), false);
+
+  const registerIdx = src.indexOf("registerTgBot(app,");
+  const notFoundIdx = src.lastIndexOf("app.notFound(");
+  assert.ok(registerIdx !== -1, "registerTgBot(app, ...) call should exist");
+  assert.ok(notFoundIdx !== -1 && registerIdx < notFoundIdx, "registerTgBot must be registered before app.notFound");
+
+  const registerSnippet = src.slice(registerIdx, notFoundIdx);
+  for (const depName of ["sysGet", "sysSet", "authSecret", "authVersion", "issueToken", "nowIso: nowIso2"]) {
+    assert.ok(registerSnippet.includes(depName), `registerTgBot deps should include ${depName}`);
+  }
+
+  const cleanupMatch = src.match(/async function cleanupTempData\(env\) \{([\s\S]*?)\r?\n\}\r?\n__name\(cleanupTempData/);
+  assert.ok(cleanupMatch, "cleanupTempData should exist");
+  assert.match(cleanupMatch[1], /tg\.imap:%/);
+});
+
+test("Real Worker dist/index.js Hono routing: /api/tg/webhook public auth, /api/tg/webhook-config Bearer & DELETE precedence, hidden /api/sys, and tg.imap:% cleanup", async () => {
+  const { default: worker } = await import("../dist/index.js");
+  const db = createInMemoryD1([
+    {
+      key: "tg.webhook_secret",
+      value: "plain-or-fallback-secret",
+      updated_at: "2026-11-25T00:00:00.000Z",
+    },
+    {
+      key: "tg.webhook_url",
+      value: "https://example.workers.dev/api/tg/webhook",
+      updated_at: "2026-11-25T00:00:00.000Z",
+    },
+  ]);
+  const env = {
+    DB: db,
+    KEY_SECRET: "test-key-secret-for-real-worker-32b",
+    AUTH_SECRET: "test-auth-secret-for-real-worker",
+    AUTH_PASSWORD: "super-secret-password",
+  };
+  const waitUntilPromises = [];
+  const ctx = {
+    waitUntil(p) {
+      waitUntilPromises.push(Promise.resolve(p));
+    },
+  };
+
+  // 1. /api/tg/webhook-config without Bearer token must return 401
+  const unauthCfgRes = await worker.fetch(new Request("https://example.workers.dev/api/tg/webhook-config"), env, ctx);
+  assert.equal(unauthCfgRes.status, 401);
+
+  // 2. /api/tg/webhook without secret header must return 401 from tg-bot.js (not 404, not Bearer middleware)
+  const unauthWebhookRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/tg/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ update_id: 1 }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(unauthWebhookRes.status, 401);
+  const unauthWebhookJson = await unauthWebhookRes.json();
+  assert.equal(unauthWebhookJson.error, "Unauthorized");
+
+  // 3. Login via /api/login to obtain a real Bearer token
+  const loginRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "super-secret-password" }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(loginRes.status, 200);
+  const { token } = await loginRes.json();
+  assert.ok(token);
+
+  // 4. Write encrypted tg.webhook_secret & tg.webhook_url via PUT /api/sys
+  const putSecretRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/sys", {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ key: "tg.webhook_secret", value: "real-webhook-secret-xyz" }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(putSecretRes.status, 200);
+  const putUrlRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/sys", {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ key: "tg.webhook_url", value: "https://example.workers.dev/api/tg/webhook" }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(putUrlRes.status, 200);
+
+  // 4b. POST /api/tg/webhook with valid X-Telegram-Bot-Api-Secret-Token succeeds without Bearer token
+  const authWebhookRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/tg/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "real-webhook-secret-xyz",
+      },
+      body: JSON.stringify({ update_id: 2 }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(authWebhookRes.status, 200);
+  assert.deepEqual(await authWebhookRes.json(), { ok: true });
+
+  // 4c. Authenticated GET /api/tg/webhook-config returns webhookUrl without Bearer rejection
+  const authCfgRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/tg/webhook-config", {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    env,
+    ctx
+  );
+  assert.equal(authCfgRes.status, 200);
+  const authCfgJson = await authCfgRes.json();
+  assert.equal(authCfgJson.webhookUrl, "https://example.workers.dev/api/tg/webhook");
+
+  // 4d. GET /api/sys must NOT expose hidden tg.webhook_secret or tg.webhook_url in items
+  const sysRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/sys", {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    env,
+    ctx
+  );
+  assert.equal(sysRes.status, 200);
+  const sysData = await sysRes.json();
+  const keys = (sysData.items || []).map((i) => i.key);
+  assert.equal(keys.includes("tg.webhook_secret"), false);
+  assert.equal(keys.includes("tg.webhook_url"), false);
+
+  // 5. Authenticated DELETE /api/tg/webhook-config must hit tg-bot.js (NOT swallowed by DELETE /api/sys/:key)
+  const delRes = await worker.fetch(
+    new Request("https://example.workers.dev/api/tg/webhook-config", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    env,
+    ctx
+  );
+  assert.equal(delRes.status, 200);
+  const delJson = await delRes.json();
+  assert.deepEqual(delJson, { ok: true, enabled: false, webhookUrl: "" });
+  assert.equal(db.rows.get("tg.webhook_secret")?.value, null);
+  assert.equal(db.rows.get("tg.webhook_url")?.value, null);
+
+  // 6. cleanupTempData via worker.scheduled deletes tg.imap:* older than 7 days and keeps fresh rows
+  const now = Date.now();
+  const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const oneDayAgo = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
+  db.rows.set("tg.imap:old_cfg", { key: "tg.imap:old_cfg", value: "{}", updated_at: tenDaysAgo });
+  db.rows.set("tg.imap:fresh_cfg", { key: "tg.imap:fresh_cfg", value: "{}", updated_at: oneDayAgo });
+
+  await worker.scheduled(null, env, ctx);
+  await Promise.all(waitUntilPromises);
+
+  assert.equal(db.rows.has("tg.imap:old_cfg"), false);
+  assert.equal(db.rows.has("tg.imap:fresh_cfg"), true);
 });

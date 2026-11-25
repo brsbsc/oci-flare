@@ -1,3 +1,4 @@
+import { registerTgBot } from "./tg-bot.js";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -202245,7 +202246,9 @@ var SYS_DEFS = [
   { key: "google.enabled", label: "\u542F\u7528 Google \u4E00\u952E\u767B\u5F55", secret: false, hidden: true },
   { key: "google.client_id", label: "Google Client ID", secret: false, hidden: true },
   { key: "google.allowed_emails", label: "\u5141\u8BB8\u767B\u5F55\u7684 Google \u90AE\u7BB1", secret: false, hidden: true },
-  { key: "dns.cf_token", label: "Cloudflare API Token", secret: true }
+  { key: "dns.cf_token", label: "Cloudflare API Token", secret: true },
+  { key: "tg.webhook_secret", label: "Telegram Webhook Secret", secret: true, hidden: true },
+  { key: "tg.webhook_url", label: "Telegram Webhook URL", secret: false, hidden: true }
 ];
 function keySecret(env) {
   if (!env.KEY_SECRET) throw new Error("\u670D\u52A1\u7AEF\u672A\u914D\u7F6E KEY_SECRET\uFF0C\u62D2\u7EDD\u52A0\u5BC6/\u89E3\u5BC6\u654F\u611F\u6570\u636E");
@@ -203643,7 +203646,9 @@ var PUBLIC_API_PATHS = /* @__PURE__ */ new Set([
   "/api/google/client-id",
   "/api/google/login",
   // VNC WS 用短时效签名 token 自校验（noVNC 无法设置自定义 header）
-  "/api/vnc/ws"
+  "/api/vnc/ws",
+  // Telegram Webhook 用 X-Telegram-Bot-Api-Secret-Token 独立校验
+  "/api/tg/webhook"
 ]);
 app.use("/api/*", async (c, next) => {
   let path = c.req.path;
@@ -205413,6 +205418,14 @@ app.post("/api/tasks/:id/run", async (c) => {
   const result = await runTaskOnce(c.env, c.req.param("id"));
   return c.json(result);
 });
+registerTgBot(app, {
+  sysGet,
+  sysSet,
+  authSecret,
+  authVersion,
+  issueToken,
+  nowIso: nowIso2
+});
 app.notFound((c) => Response.json({ error: "\u63A5\u53E3\u4E0D\u5B58\u5728" }, { status: 404 }));
 app.onError((err, c) => {
   console.error("unhandled", err);
@@ -205440,6 +205453,12 @@ async function cleanupTempData(env) {
     await env.DB.prepare(
       "DELETE FROM sys_cfg WHERE key LIKE 'google.used:%' AND CAST(value AS INTEGER) * 1000 + 3600000 < ?"
     ).bind(now).run();
+  } catch {
+  }
+  try {
+    await env.DB.prepare(
+      "DELETE FROM sys_cfg WHERE key LIKE 'tg.imap:%' AND updated_at < ?"
+    ).bind(new Date(now - keepMs).toISOString()).run();
   } catch {
   }
 }
