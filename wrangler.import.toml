@@ -20,9 +20,17 @@ run_worker_first = ["/api/*"]
 name = "LOG_HUB"
 class_name = "LogHub"
 
+[[durable_objects.bindings]]
+name = "VNC_TUNNEL"
+class_name = "VncTunnel"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LogHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["VncTunnel"]
 
 [triggers]
 crons = ["* * * * *"]

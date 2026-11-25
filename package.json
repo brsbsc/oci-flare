@@ -3,8 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "description": "OCI Helper Serverless - 一键部署到 Cloudflare",
+  "type": "module",
   "scripts": {
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.166.0"

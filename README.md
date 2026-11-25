@@ -135,9 +135,8 @@ Allow group <你的组> to inspect limits in tenancy
 ## Google 一键登录配置（可选）
 
 1. 在 [Google Cloud Console](https://console.cloud.google.com/apis/credentials) 创建 **OAuth 2.0 客户端 ID**（应用类型选 **Web 应用**）。
-2. 在 **已获授权的 JavaScript 来源** 中添加你的面板域名（例如 `https://your-domain.com`）。
-3. 在 **已获授权的重定向 URI** 中添加 `https://your-domain.com/google-callback`（用于移动端重定向模式；桌面端弹窗模式可不依赖回调）。
-4. 复制生成的 **Client ID**（无需 Client Secret），回到面板 **系统设置 → Google 一键登录**，填入 Client ID 与允许登录的邮箱白名单（多个用逗号分隔），勾选启用并保存即可。
+2. 在 **已获授权的 JavaScript 来源** 中添加你的面板域名（例如 `https://your-domain.com`）；面板采用浏览器弹窗模式完成认证，无需配置重定向 URI。
+3. 复制生成的 **Client ID**（无需 Client Secret），回到面板 **系统设置 → Google 一键登录**，填入 Client ID 与允许登录的邮箱白名单（多个用逗号分隔），勾选启用并保存即可。
 
 ---
 
@@ -177,4 +176,4 @@ node --test tests/*.test.mjs
 
 ## 隐私与数据存储
 
-所有 OCI 私钥、私钥口令、实例 root 密码、Telegram Bot Token、Webhook Secret 及第三方凭证均使用你自己的 `KEY_SECRET` 经 **HKDF-SHA256 + AES-256-GCM** 加密后保存在你个人 Cloudflare 账号的 D1 数据库中，登录凭证带 `jti` 与密码版本校验，修改密码即刻全端失效。
+所有 OCI 私钥、私钥口令、实例 root 密码、Telegram Bot Token、Webhook Secret 及第三方凭证均使用你自己的 `KEY_SECRET` 经 **HKDF-SHA256 + AES-256-GCM** 加密后保存在你个人 Cloudflare 账号的 D1 数据库中，登录凭证带 `jti` 与密码版本校验，修改密码即刻全端失效。第三方放货面板上报与公共频道广播均默认关闭，仅在你主动配置放货面板 Token 或手动开启公共频道推送开关时才会发送。
