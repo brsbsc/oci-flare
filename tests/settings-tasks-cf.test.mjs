@@ -19,6 +19,12 @@ test("TaskManageView opens AppLogPanel as drawer variant with full-height .ui-lo
   assert.match(src, /export\{[A-Za-z0-9_$]+ as default\}/);
 });
 
+test("TaskManageView guards oci_mini_task_cfg localStorage read/write with try/catch", () => {
+  const src = fs.readFileSync("web-dist/assets/TaskManageView-C7VfWf-q.js", "utf8");
+  assert.match(src, /try\{[^}]*localStorage\.getItem\("oci_mini_task_cfg"\)[^}]*\}catch/);
+  assert.match(src, /try\{[^}]*localStorage\.setItem\("oci_mini_task_cfg"[^}]*\}catch/);
+});
+
 test("CloudflareView uses compact .cf-status-bar and flexible .cf-dns-content column", () => {
   const src = fs.readFileSync("web-dist/assets/CloudflareView-Dzih7xW-.js", "utf8");
   assert.match(src, /cf-status-bar/);

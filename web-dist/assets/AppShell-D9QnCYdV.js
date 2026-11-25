@@ -26,7 +26,7 @@ const Ve=defineComponent({
       {name:"cloudflare",label:"Cloudflare",icon:GlobeIcon},
       {name:"settings",label:"系统设置",icon:SettingsIcon}
     ];
-    const collapsed=ref(localStorage.getItem("oci_mini_sidebar")==="1");
+    const collapsed=ref((()=>{try{return localStorage.getItem("oci_mini_sidebar")==="1"}catch{return!1}})());
     const style=ref(getStyle());
     const theme=ref(getTheme());
     const width=ref(getWidth());

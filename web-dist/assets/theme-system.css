@@ -43,7 +43,9 @@ html[data-style="precision"].dark {
 
   --color-success: #22C55E;
   --color-warning: #F59E0B;
+  --color-warning-on: #0F172A;
   --color-danger: #EF4444;
+  --color-danger-solid: #DC2626;
 
   --tone-sky-bg: rgba(59, 130, 246, 0.14);
   --tone-sky-fg: #93C5FD;
@@ -118,6 +120,7 @@ html[data-style="precision"].light {
 
   --color-success: #15803D;
   --color-warning: #B45309;
+  --color-warning-on: #FFFFFF;
   --color-danger: #DC2626;
 
   --tone-sky-bg: #EFF6FF;
@@ -198,6 +201,7 @@ html[data-style="bento"].dark {
 
   --color-success: #34D399;
   --color-warning: #FBBF24;
+  --color-warning-on: #0F172A;
   --color-danger: #F87171;
 
   --tone-sky-bg: rgba(59, 130, 246, 0.16);
@@ -273,6 +277,7 @@ html[data-style="bento"].light {
 
   --color-success: #047857;
   --color-warning: #B45309;
+  --color-warning-on: #FFFFFF;
   --color-danger: #DC2626;
 
   --tone-sky-bg: #EFF6FF;
@@ -357,7 +362,9 @@ html[data-style="cockpit"].dark {
 
   --color-success: #22C55E;
   --color-warning: #F59E0B;
+  --color-warning-on: #0F172A;
   --color-danger: #EF4444;
+  --color-danger-solid: #DC2626;
 
   --tone-sky-bg: rgba(56, 189, 248, 0.14);
   --tone-sky-fg: #7DD3FC;
@@ -433,6 +440,7 @@ html[data-style="cockpit"].light {
 
   --color-success: #047857;
   --color-warning: #B45309;
+  --color-warning-on: #FFFFFF;
   --color-danger: #DC2626;
 
   --tone-sky-bg: #E0F2FE;
@@ -642,8 +650,8 @@ html[data-style="cockpit"] .aurora {
     border-color: var(--tone-red-ring);
   }
   .ui-btn-danger:hover:not(:disabled) {
-    background-color: var(--color-danger);
-    border-color: var(--color-danger);
+    background-color: var(--color-danger-solid);
+    border-color: var(--color-danger-solid);
     color: #FFFFFF;
   }
 
@@ -1019,6 +1027,15 @@ textarea:focus-visible,
 .hover\:border-white\/20:hover {
   border-color: var(--border-strong);
 }
+.hover\:bg-rose-500\/20:hover {
+  background-color: var(--tone-red-bg);
+}
+.hover\:text-rose-300:hover {
+  color: var(--tone-red-fg);
+}
+.hover\:text-slate-400:hover {
+  color: var(--text-secondary);
+}
 
 /* Minimum legibility floor */
 .text-\[10px\] {
@@ -1086,13 +1103,16 @@ textarea:focus-visible,
   background-color: var(--color-primary-hover);
 }
 [role="alertdialog"] .bg-rose-500\/90 {
-  background-color: var(--color-danger);
+  background-color: var(--color-danger-solid);
   color: #FFFFFF;
   box-shadow: none;
 }
+[role="alertdialog"] .bg-rose-500\/90:hover {
+  background-color: #B91C1C;
+}
 [role="alertdialog"] .bg-amber-500\/90 {
   background-color: var(--color-warning);
-  color: #0F172A;
+  color: var(--color-warning-on);
 }
 
 /* --------------------------------------------------------------------------

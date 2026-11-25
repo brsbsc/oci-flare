@@ -18,6 +18,13 @@ test("AppShell wraps RouterView in .shell-container, adds width toggle, 3-theme 
   assert.match(src, /export\{[A-Za-z0-9_$]+ as default\}/);
 });
 
+test("AppShell guards sidebar localStorage access with try/catch", () => {
+  const src = fs.readFileSync("web-dist/assets/AppShell-D9QnCYdV.js", "utf8");
+  assert.doesNotMatch(src, /ref\(localStorage\.getItem\("oci_mini_sidebar"\)/);
+  assert.match(src, /try\{[^}]*localStorage\.getItem\("oci_mini_sidebar"\)[^}]*\}catch/);
+  assert.match(src, /try\{[^}]*localStorage\.setItem\("oci_mini_sidebar"[^}]*\}catch/);
+});
+
 test("LoginView aligns with theme-store, provides corner quick switcher, uses .brand-mark, and preserves auth flows", () => {
   const src = fs.readFileSync("web-dist/assets/LoginView-BU-WcVZj.js", "utf8");
   assert.match(src, /\.\/theme-store\.js/);

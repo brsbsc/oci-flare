@@ -132,3 +132,37 @@ test("theme-system.css places .field and .header-icon-btn inside @layer componen
   assert.match(css, /\.shell-header\s*\{[^}]*z-index:\s*30/);
   assert.match(css, /\.segmented-btn\s*\{[^}]*white-space:\s*nowrap/);
 });
+
+test("theme-system.css meets WCAG AA contrast on solid danger/warning buttons and bridges light hover utilities", () => {
+  const css = fs.readFileSync("web-dist/assets/theme-system.css", "utf8");
+
+  // Solid danger token (#DC2626 gives 4.83:1 with #FFFFFF, >= 4.5:1 WCAG AA)
+  assert.match(css, /--color-danger-solid:\s*#(?:DC2626|B91C1C)/i);
+  assert.match(
+    css,
+    /\.ui-btn-danger:hover:not\(:disabled\)\s*\{[^}]*background-color:\s*var\(--color-danger-solid\)/
+  );
+  assert.match(
+    css,
+    /\[role="alertdialog"\]\s+\.bg-rose-500\\\/90\s*\{[^}]*background-color:\s*var\(--color-danger-solid\)/
+  );
+
+  // Theme-aware warning button foreground (#0F172A on dark bright amber, #FFFFFF on light #B45309 -> 5.02:1)
+  assert.match(css, /--color-warning-on:\s*#0F172A/i);
+  for (const style of ["precision", "bento", "cockpit"]) {
+    const lightBlockRe = new RegExp(
+      `html\\[data-style="${style}"\\]\\.light\\s*\\{[\\s\\S]*?--color-warning-on:\\s*#FFFFFF`,
+      "i"
+    );
+    assert.match(css, lightBlockRe, `missing light --color-warning-on: #FFFFFF for ${style}`);
+  }
+  assert.match(
+    css,
+    /\[role="alertdialog"\]\s+\.bg-amber-500\\\/90\s*\{[^}]*color:\s*var\(--color-warning-on\)/
+  );
+
+  // Light-mode hover utility bridges for delete buttons and muted links
+  assert.match(css, /\.hover\\:bg-rose-500\\\/20:hover\s*\{[^}]*background-color:\s*var\(--tone-red-bg\)/);
+  assert.match(css, /\.hover\\:text-rose-300:hover\s*\{[^}]*color:\s*var\(--tone-red-fg\)/);
+  assert.match(css, /\.hover\\:text-slate-400:hover\s*\{[^}]*color:\s*var\(--text-secondary\)/);
+});
