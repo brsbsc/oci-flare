@@ -145,16 +145,7 @@ const se=defineComponent({
           createElementVNode("div",{class:normalizeClass(["flex min-h-11 justify-center",googleLoading.value?"opacity-50 pointer-events-none":""])},[
             createElementVNode("div",{ref_key:"googleHost",ref:googleHost,class:"google-signin-host"},null,512)
           ],2)
-        ],64)):createCommentVNode("",!0),
-        createElementVNode("a",{
-          href:"https://github.com/Yohann0617/oci-helper-serverless-cf",
-          target:"_blank",
-          rel:"noopener",
-          class:"mt-6 flex items-center justify-center gap-1.5 text-[11px] text-slate-500 transition-colors hover:text-sky-300"
-        },[
-          createElementVNode("svg",{class:"size-3.5",viewBox:"0 0 24 24",fill:"currentColor","aria-hidden":"true"},[createElementVNode("path",{d:"M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.4 3.6 1.1.1-.8.4-1.4.8-1.7-2.7-.3-5.5-1.4-5.5-6.1 0-1.4.5-2.5 1.3-3.4-.1-.3-.6-1.6.1-3.3 0 0 1-.3 3.4 1.2a11.7 11.7 0 0 1 6.1 0C17.3 4.9 18.3 5.2 18.3 5.2c.7 1.7.2 3 .1 3.3.8.9 1.3 2 1.3 3.4 0 4.7-2.8 5.8-5.5 6.1.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3z"})]),
-          createTextVNode(" GitHub · 部署文档 / 一键部署 ")
-        ])
+        ],64)):createCommentVNode("",!0)
       ])
     ]))
   }

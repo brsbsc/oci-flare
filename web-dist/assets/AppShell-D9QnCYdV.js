@@ -201,19 +201,6 @@ const Ve=defineComponent({
                   theme.value==="dark"?(openBlock(),createBlock(unref(SunIcon),{key:0,class:"size-4"})):(openBlock(),createBlock(unref(MoonIcon),{key:1,class:"size-4"}))
                 ],8,["title","aria-label"]),
 
-                // GitHub link
-                createElementVNode("a",{
-                  href:"https://github.com/Yohann0617/oci-helper-serverless-cf",
-                  target:"_blank",
-                  rel:"noopener",
-                  title:"GitHub 项目地址",
-                  "aria-label":"GitHub 项目地址",
-                  class:"header-icon-btn"
-                },[
-                  createElementVNode("svg",{class:"size-4",viewBox:"0 0 24 24",fill:"currentColor","aria-hidden":"true"},[createElementVNode("path",{d:"M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.4 3.6 1.1.1-.8.4-1.4.8-1.7-2.7-.3-5.5-1.4-5.5-6.1 0-1.4.5-2.5 1.3-3.4-.1-.3-.6-1.6.1-3.3 0 0 1-.3 3.4 1.2a11.7 11.7 0 0 1 6.1 0C17.3 4.9 18.3 5.2 18.3 5.2c.7 1.7.2 3 .1 3.3.8.9 1.3 2 1.3 3.4 0 4.7-2.8 5.8-5.5 6.1.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3z"})]),
-                  createElementVNode("span",{class:"hidden text-xs sm:inline"},"GitHub")
-                ]),
-
                 // Logout
                 createElementVNode("button",{type:"button",class:"header-icon-btn",title:"退出登录","aria-label":"退出登录",onClick:logout},[createVNode(unref(LogOutIcon),{class:"size-4"})])
               ])

@@ -36,3 +36,15 @@ test("LoginView aligns with theme-store, provides corner quick switcher, uses .b
   assert.match(src, /accounts\.google\.com\/gsi\/client/);
   assert.match(src, /export\{[A-Za-z0-9_$]+ as default\}/);
 });
+
+test("AppShell, LoginView, and README contain no upstream Yohann0617 links", () => {
+  const shell = fs.readFileSync("web-dist/assets/AppShell-D9QnCYdV.js", "utf8");
+  const login = fs.readFileSync("web-dist/assets/LoginView-BU-WcVZj.js", "utf8");
+  const readme = fs.readFileSync("README.md", "utf8");
+  for (const content of [shell, login, readme]) {
+    assert.doesNotMatch(content, /Yohann0617/i);
+  }
+  assert.doesNotMatch(shell, /github\.com/i);
+  assert.doesNotMatch(login, /github\.com/i);
+  assert.match(readme, /https:\/\/github\.com\/brsbsc\/oci-helper-serverless-cf/);
+});

@@ -9,6 +9,7 @@ test("SettingsView renders 2-col .settings-secrets-grid, .settings-prose, and pr
   assert.match(src, /settings-prose/);
   assert.match(src, /rounded-lg bg-white p-2/);
   assert.doesNotMatch(src, /field max-w-md flex-1 font-mono text-xs/);
+  assert.doesNotMatch(src, /Yohann0617/i);
   assert.match(src, /export\{[A-Za-z0-9_$]+ as default\}/);
 });
 
