@@ -200434,26 +200434,32 @@ async function listInstances(c, filter = {}) {
   const ads = [...new Set(alive.map((i) => i.availabilityDomain ?? "").filter((x) => !!x))];
   const volumes = await bootVolumeSizes(c, ads);
   const result = [];
-  for (const inst of alive) {
-    const { publicIps, privateIps, ipv6Addresses } = await getInstanceIps(c, inst.id);
-    const volume = volumes.get(inst.id);
-    result.push({
-      id: inst.id,
-      displayName: inst.displayName ?? "",
-      shape: inst.shape ?? "",
-      state: inst.lifecycleState ?? "",
-      availabilityDomain: inst.availabilityDomain ?? "",
-      region: c.region.regionId,
-      timeCreated: toIsoTime(inst.timeCreated),
-      ocpus: inst.shapeConfig?.ocpus,
-      memoryInGBs: inst.shapeConfig?.memoryInGBs,
-      bootVolumeGb: volume?.sizeInGBs,
-      bootVolumeVpusPerGB: volume?.vpusPerGB,
-      publicIps,
-      privateIps,
-      ipv6Addresses,
-      rootPassword: inst.freeformTags?.["root-password"]
-    });
+  const batchSize = 5;
+  for (let i = 0; i < alive.length; i += batchSize) {
+    const batch = alive.slice(i, i + batchSize);
+    const ipsList = await Promise.all(batch.map((inst) => getInstanceIps(c, inst.id)));
+    for (let j = 0; j < batch.length; j++) {
+      const inst = batch[j];
+      const { publicIps, privateIps, ipv6Addresses } = ipsList[j];
+      const volume = volumes.get(inst.id);
+      result.push({
+        id: inst.id,
+        displayName: inst.displayName ?? "",
+        shape: inst.shape ?? "",
+        state: inst.lifecycleState ?? "",
+        availabilityDomain: inst.availabilityDomain ?? "",
+        region: c.region.regionId,
+        timeCreated: toIsoTime(inst.timeCreated),
+        ocpus: inst.shapeConfig?.ocpus,
+        memoryInGBs: inst.shapeConfig?.memoryInGBs,
+        bootVolumeGb: volume?.sizeInGBs,
+        bootVolumeVpusPerGB: volume?.vpusPerGB,
+        publicIps,
+        privateIps,
+        ipv6Addresses,
+        rootPassword: inst.freeformTags?.["root-password"]
+      });
+    }
   }
   return result;
 }
@@ -200817,7 +200823,16 @@ async function addSecurityRule(c, securityListId, input) {
   const direction = input.direction === "egress" ? "egress" : "ingress";
   const rule = buildRule(input, direction);
   const list = direction === "ingress" ? current.ingressSecurityRules ?? [] : current.egressSecurityRules ?? [];
-  const key = /* @__PURE__ */ __name((r) => `${r.protocol}|${rule.protocol === "6" || rule.protocol === "17" ? `${(r.tcpOptions ?? r.udpOptions)?.destinationPortRange?.min}-${(r.tcpOptions ?? r.udpOptions)?.destinationPortRange?.max}` : ""}|${r.source ?? r.destination}`, "key");
+  const key = /* @__PURE__ */ __name((r) => {
+    let detail = "";
+    if (r.protocol === "6" || r.protocol === "17") {
+      const range = (r.tcpOptions ?? r.udpOptions)?.destinationPortRange;
+      detail = `${range?.min}-${range?.max}`;
+    } else if (r.protocol === "1") {
+      detail = `${r.icmpOptions?.type ?? ""}:${r.icmpOptions?.code ?? ""}`;
+    }
+    return `${r.protocol}|${detail}|${r.source ?? r.destination}`;
+  }, "key");
   if (list.some((r) => key(r) === key(rule))) return { added: false };
   const nextList = [...list, rule];
   await c.vnet.updateSecurityList({
@@ -201184,14 +201199,19 @@ async function totpNow(secret, step = 30) {
   return hotp(secret, Math.floor(Date.now() / 1e3 / step));
 }
 __name(totpNow, "totpNow");
-async function verifyTotp(secret, code, step = 30) {
-  const input = (code ?? "").replace(/\s/g, "");
-  if (!/^\d{6}$/.test(input) || !secret) return false;
+async function verifyTotpWithStep(secret, code, step = 30) {
+  const input = String(code ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(input) || !secret) return null;
   const counter = Math.floor(Date.now() / 1e3 / step);
   for (const delta of [-1, 0, 1]) {
-    if (await hotp(secret, counter + delta) === input) return true;
+    const stepCounter = counter + delta;
+    if (constantTimeEqual(await hotp(secret, stepCounter), input)) return stepCounter;
   }
-  return false;
+  return null;
+}
+__name(verifyTotpWithStep, "verifyTotpWithStep");
+async function verifyTotp(secret, code, step = 30) {
+  return (await verifyTotpWithStep(secret, code, step)) !== null;
 }
 __name(verifyTotp, "verifyTotp");
 
@@ -201287,7 +201307,10 @@ async function queryLimits(c, opts = {}) {
   const service = (opts.service ?? "").trim();
   const key = c.compartmentId + "::" + c.region.regionId + "::" + (service || "*");
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.result;
+  if (hit) {
+    if (Date.now() - hit.ts < CACHE_TTL_MS) return hit.result;
+    cache.delete(key);
+  }
   const services = await listLimitServices(c);
   let targets;
   if (service) {
@@ -201313,7 +201336,16 @@ async function queryLimits(c, opts = {}) {
     scanned: targets,
     truncated: !service && services.length > targets.length
   };
-  cache.set(key, { ts: Date.now(), result });
+  const now = Date.now();
+  for (const [k, v] of cache) {
+    if (now - v.ts >= CACHE_TTL_MS) cache.delete(k);
+  }
+  while (cache.size >= 50) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === void 0) break;
+    cache.delete(oldestKey);
+  }
+  cache.set(key, { ts: now, result });
   return result;
 }
 __name(queryLimits, "queryLimits");
@@ -201560,9 +201592,11 @@ __name(getPlanType, "getPlanType");
 
 // src/lib/google.ts
 var cachedKeys = null;
-async function googlePublicKeys() {
-  if (cachedKeys && Date.now() - cachedKeys.ts < 36e5) return cachedKeys.keys;
-  const res = await fetch("https://www.googleapis.com/oauth2/v3/certs");
+async function googlePublicKeys(force = false) {
+  if (!force && cachedKeys && Date.now() - cachedKeys.ts < 36e5) return cachedKeys.keys;
+  const res = await fetch("https://www.googleapis.com/oauth2/v3/certs", {
+    signal: AbortSignal.timeout(8e3)
+  });
   if (!res.ok) throw new Error("\u65E0\u6CD5\u83B7\u53D6 Google \u516C\u94A5");
   const data = await res.json();
   const keys = data.keys ?? [];
@@ -201600,8 +201634,12 @@ async function verifyGoogleIdToken(credential, clientId) {
     throw new Error("Google \u51ED\u8BC1\u89E3\u6790\u5931\u8D25");
   }
   if (header.alg !== "RS256" || !header.kid) throw new Error("\u4E0D\u652F\u6301\u7684 Google \u51ED\u8BC1\u7B7E\u540D\u7B97\u6CD5");
-  const keys = await googlePublicKeys();
-  const jwk = keys.find((k) => k.kid === header.kid);
+  let keys = await googlePublicKeys();
+  let jwk = keys.find((k) => k.kid === header.kid);
+  if (!jwk) {
+    keys = await googlePublicKeys(true);
+    jwk = keys.find((k) => k.kid === header.kid);
+  }
   if (!jwk) throw new Error("\u627E\u4E0D\u5230\u5339\u914D kid \u7684 Google \u516C\u94A5");
   const key = await importJwk(jwk);
   const ok = await crypto.subtle.verify(
@@ -201679,11 +201717,12 @@ async function getTrafficData(c, p) {
     queryMetric(c, p.region, inQ, start, end),
     queryMetric(c, p.region, outQ, start, end)
   ]);
+  const inMap = new Map(inPts.map((x) => [x.time, x.value]));
   const outMap = new Map(outPts.map((x) => [x.time, x.value]));
-  const times = inPts.map((x) => x.time).filter((t) => outMap.has(t));
+  const times = [...new Set([...inMap.keys(), ...outMap.keys()])].sort();
   return {
     time: times,
-    inbound: times.map((t) => inPts.find((x) => x.time === t)?.value ?? 0),
+    inbound: times.map((t) => inMap.get(t) ?? 0),
     outbound: times.map((t) => outMap.get(t) ?? 0)
   };
 }
@@ -201691,32 +201730,44 @@ __name(getTrafficData, "getTrafficData");
 async function getMonthlyTraffic(c, p) {
   const start = new Date(Date.UTC(p.year, p.month - 1, 1));
   const end = new Date(Date.UTC(p.year, p.month, 1));
-  const instances = await listInstances(c, {});
+  const rawInstances = await listAll(
+    (page) => c.compute.listInstances({ compartmentId: c.compartmentId, page })
+  );
+  const instances = rawInstances.filter((i) => i.lifecycleState !== "TERMINATED");
   let inbound = 0;
   let outbound = 0;
   const vnicIds = [];
-  for (const inst of instances) {
-    try {
-      const atts = await c.compute.listVnicAttachments({ compartmentId: c.compartmentId, instanceId: inst.id });
-      for (const a of atts.items ?? []) if (a.vnicId) vnicIds.push(a.vnicId);
-    } catch {
+  const instBatchSize = 6;
+  for (let i = 0; i < instances.length; i += instBatchSize) {
+    const batch = instances.slice(i, i + instBatchSize);
+    const batchAtts = await Promise.all(
+      batch.map(
+        (inst) => c.compute.listVnicAttachments({ compartmentId: c.compartmentId, instanceId: inst.id }).then((r) => r.items ?? []).catch(() => [])
+      )
+    );
+    for (const items of batchAtts) {
+      for (const a of items) if (a.vnicId) vnicIds.push(a.vnicId);
     }
   }
-  const results = await Promise.all(
-    vnicIds.map(async (id) => {
-      const [i, o] = await Promise.all([
-        queryMetric(c, p.region, `${IN_METRIC}[1440m]{resourceId = "${id}"}.sum()`, start, end),
-        queryMetric(c, p.region, `${OUT_METRIC}[1440m]{resourceId = "${id}"}.sum()`, start, end)
-      ]);
-      return {
-        in: i.reduce((s, x) => s + x.value, 0),
-        out: o.reduce((s, x) => s + x.value, 0)
-      };
-    })
-  );
-  for (const r of results) {
-    inbound += r.in;
-    outbound += r.out;
+  const metricBatchSize = 6;
+  for (let i = 0; i < vnicIds.length; i += metricBatchSize) {
+    const batch = vnicIds.slice(i, i + metricBatchSize);
+    const results = await Promise.all(
+      batch.map(async (id) => {
+        const [inp, outp] = await Promise.all([
+          queryMetric(c, p.region, `${IN_METRIC}[1440m]{resourceId = "${id}"}.sum()`, start, end),
+          queryMetric(c, p.region, `${OUT_METRIC}[1440m]{resourceId = "${id}"}.sum()`, start, end)
+        ]);
+        return {
+          in: inp.reduce((s, x) => s + x.value, 0),
+          out: outp.reduce((s, x) => s + x.value, 0)
+        };
+      })
+    );
+    for (const r of results) {
+      inbound += r.in;
+      outbound += r.out;
+    }
   }
   return { instanceCount: instances.length, inbound, outbound };
 }
@@ -201794,10 +201845,12 @@ async function getCostAnalysis(c, p) {
 __name(getCostAnalysis, "getCostAnalysis");
 
 // src/lib/bootstrap.ts
-var initialized = false;
+var schemaPromise = null;
+var schemaDb = null;
 async function ensureSchema(env) {
-  if (initialized) return;
-  initialized = true;
+  if (!env?.DB || typeof env.DB.batch !== "function") return;
+  if (schemaPromise && schemaDb === env.DB) return schemaPromise;
+  const db = env.DB;
   const statements = [
     `CREATE TABLE IF NOT EXISTS oci_cfg (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, tenancy_ocid TEXT NOT NULL,
@@ -201827,9 +201880,19 @@ async function ensureSchema(env) {
     `CREATE TABLE IF NOT EXISTS sys_cfg (
       key TEXT PRIMARY KEY, value TEXT, updated_at TEXT NOT NULL)`
   ];
+  schemaDb = db;
+  const p = (async () => {
+    await db.batch(statements.map((sql) => db.prepare(sql)));
+  })();
+  schemaPromise = p;
   try {
-    await env.DB.batch(statements.map((sql) => env.DB.prepare(sql)));
-  } catch {
+    await p;
+  } catch (e) {
+    if (schemaPromise === p) {
+      schemaPromise = null;
+      schemaDb = null;
+    }
+    throw e;
   }
 }
 __name(ensureSchema, "ensureSchema");
@@ -202068,12 +202131,12 @@ async function changePublicIp(c, instanceId, cidrList = []) {
     if (!cidrList.length || ipInCidrs(ip, cidrList)) {
       return { ip, attempts: attempt };
     }
-    if (created.publicIp?.id) {
+    if (attempt < maxAttempts && created.publicIp?.id) {
       await c.vnet.deletePublicIp({ publicIpId: created.publicIp.id }).catch(() => void 0);
       await waitRelease(c, privateIpId, 4);
     }
   }
-  throw new Error(`\u91CD\u8BD5 ${maxAttempts} \u6B21\u4ECD\u672A\u5206\u914D\u5230\u6307\u5B9A\u7F51\u6BB5\uFF08\u6700\u540E\u4E00\u6B21\uFF1A${lastIp || "\u65E0"}\uFF09`);
+  throw new Error(`\u91CD\u8BD5 ${maxAttempts} \u6B21\u4ECD\u672A\u547D\u4E2D\u76EE\u6807\u7F51\u6BB5\uFF0C\u5DF2\u4FDD\u7559\u5F53\u524D\u65B0 IP\uFF1A${lastIp || "\u65E0"}`);
 }
 __name(changePublicIp, "changePublicIp");
 async function listRegionCidrs(region) {
@@ -202158,14 +202221,21 @@ async function getTenantOverview(c, tenancyId) {
 }
 __name(getTenantOverview, "getTenantOverview");
 async function sendTelegram(token, chatId, text) {
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true })
-  });
+  const redact = /* @__PURE__ */ __name((s) => String(s ?? "").replace(/\/bot[^/\s]+\//g, "/bot***/"), "redact");
+  let res;
+  try {
+    res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(8e3)
+    });
+  } catch (e) {
+    throw new Error(redact(e?.message ?? e));
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.ok === false) {
-    throw new Error(data?.description || `Telegram \u8FD4\u56DE ${res.status}`);
+    throw new Error(redact(data?.description || `Telegram \u8FD4\u56DE ${res.status}`));
   }
   return true;
 }
@@ -202378,14 +202448,15 @@ __name(tgNotify, "tgNotify");
 async function bootBroadcast(env, p) {
   try {
     const token = (await sysGet(env, "notify.boot_token"))?.trim() || "";
+    if (!token) return;
     const qs = new URLSearchParams({
       // 原项目 OciRegionsEnum.getKeyById() = 机场代码（如 sa-saopaulo-1 -> GRU）
       region: regionKey(p.region),
-      arch: p.arch.toLowerCase()
+      arch: p.arch.toLowerCase(),
+      token
     });
-    if (token) qs.set("token", token);
     const url = `${BOOT_BROADCAST_URL}?${qs.toString()}`;
-    const res = await fetch(url, { method: "GET" });
+    const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5e3) });
     const body = await res.text().catch(() => "");
     console.log(`[Broadcast] \u653E\u8D27\u9762\u677F ${res.status} ${body.slice(0, 120)} url=${url.replace(/token=[^&]*/, "token=***")}`);
   } catch (e) {
@@ -202395,10 +202466,10 @@ async function bootBroadcast(env, p) {
 __name(bootBroadcast, "bootBroadcast");
 async function channelBroadcast(env, text) {
   try {
-    if (await sysGet(env, "notify.channel_enabled") === "0") return;
+    if (await sysGet(env, "notify.channel_enabled") !== "1") return;
     const qs = new URLSearchParams({ text });
     const url = `${CHANNEL_BROADCAST_URL}?${qs.toString()}`;
-    const res = await fetch(url, { method: "GET" });
+    const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5e3) });
     const body = await res.text().catch(() => "");
     console.log(`[Broadcast] TG\u9891\u9053 ${res.status} ${body.slice(0, 120)}`);
   } catch (e) {
@@ -202659,8 +202730,17 @@ __name(resolveZoneId, "resolveZoneId");
 // src/lib/log-bus.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 var als = new AsyncLocalStorage();
-function runTraced(ctx, fn) {
-  return als.run(ctx, fn);
+async function runTraced(ctx, fn) {
+  try {
+    return await als.run(ctx, fn);
+  } finally {
+    if (typeof ctx?.flush === "function") {
+      try {
+        await ctx.flush();
+      } catch {
+      }
+    }
+  }
 }
 __name(runTraced, "runTraced");
 async function safePublish(ctx, entry) {
@@ -202671,11 +202751,27 @@ async function safePublish(ctx, entry) {
 }
 __name(safePublish, "safePublish");
 async function publishEntry(env, entry) {
-  const payload = { id: crypto.randomUUID(), ts: Date.now(), ...entry };
-  const stub = env.LOG_HUB.get(env.LOG_HUB.idFromName("global"));
-  await stub.fetch("https://log-hub/publish", { method: "POST", body: JSON.stringify(payload) });
+  if (!env?.LOG_HUB) return;
+  try {
+    const payload = { id: crypto.randomUUID(), ts: Date.now(), ...entry };
+    const stub = env.LOG_HUB.get(env.LOG_HUB.idFromName("global"));
+    await stub.fetch("https://log-hub/publish", { method: "POST", body: JSON.stringify(payload) });
+  } catch {
+  }
 }
 __name(publishEntry, "publishEntry");
+async function publishEntriesBatch(env, entries) {
+  if (!env?.LOG_HUB || !entries?.length) return;
+  try {
+    const stub = env.LOG_HUB.get(env.LOG_HUB.idFromName("global"));
+    await stub.fetch("https://log-hub/publish-batch", {
+      method: "POST",
+      body: JSON.stringify({ entries })
+    });
+  } catch {
+  }
+}
+__name(publishEntriesBatch, "publishEntriesBatch");
 function describeOciCall(method, path) {
   const p = path.replace(/^\/\d{8}/, "");
   const rules = [
@@ -202706,55 +202802,77 @@ var installed = false;
 function installOciFetchTracer() {
   if (installed) return;
   installed = true;
-  const original = globalThis.fetch.bind(globalThis);
-  globalThis.fetch = (async (input, init) => {
-    const ctx = als.getStore();
-    if (!ctx) return original(input, init);
-    let url;
-    try {
-      url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    } catch {
-      return original(input, init);
-    }
-    if (!/\.oraclecloud\.com$/i.test(url.hostname)) return original(input, init);
-    const method = (init?.method ?? input?.method ?? "GET").toUpperCase();
-    const op = describeOciCall(method, url.pathname);
-    const started = Date.now();
-    try {
-      const res = await original(input, init);
-      let body = "";
+  const initialFetch = globalThis.fetch.bind(globalThis);
+  const wrapFetch = /* @__PURE__ */ __name((baseFetch) => {
+    const wrapped = async (input, init) => {
+      const ctx = als.getStore();
+      if (!ctx) return baseFetch(input, init);
+      let url;
       try {
-        body = (await res.clone().text()).slice(0, 2e3);
+        url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       } catch {
-        body = "";
+        return baseFetch(input, init);
       }
-      await safePublish(ctx, {
-        level: res.ok ? "info" : "error",
-        source: "oci",
-        op,
-        method,
-        path: url.pathname,
-        status: res.status,
-        ms: Date.now() - started,
-        message: `${op} \u2192 ${res.status} ${res.statusText || ""}`.trim(),
-        detail: body
-      });
-      return res;
-    } catch (e) {
-      await safePublish(ctx, {
-        level: "error",
-        source: "oci",
-        op,
-        method,
-        path: url.pathname,
-        status: 0,
-        ms: Date.now() - started,
-        message: `${op} \u2192 \u7F51\u7EDC\u9519\u8BEF`,
-        detail: e?.message ?? String(e)
-      });
-      throw e;
-    }
-  });
+      if (!/\.oraclecloud\.com$/i.test(url.hostname)) return baseFetch(input, init);
+      const method = (init?.method ?? input?.method ?? "GET").toUpperCase();
+      const op = describeOciCall(method, url.pathname);
+      const started = Date.now();
+      try {
+        const res = await baseFetch(input, init);
+        let body = "";
+        try {
+          body = (await res.clone().text()).slice(0, 2e3);
+        } catch {
+          body = "";
+        }
+        await safePublish(ctx, {
+          level: res.ok ? "info" : "error",
+          source: "oci",
+          op,
+          method,
+          path: url.pathname,
+          status: res.status,
+          ms: Date.now() - started,
+          message: `${op} \u2192 ${res.status} ${res.statusText || ""}`.trim(),
+          detail: body
+        });
+        return res;
+      } catch (e) {
+        await safePublish(ctx, {
+          level: "error",
+          source: "oci",
+          op,
+          method,
+          path: url.pathname,
+          status: 0,
+          ms: Date.now() - started,
+          message: `${op} \u2192 \u7F51\u7EDC\u9519\u8BEF`,
+          detail: e?.message ?? String(e)
+        });
+        throw e;
+      }
+    };
+    wrapped.__isOciTracer = true;
+    wrapped.__baseFetch = baseFetch;
+    return wrapped;
+  }, "wrapFetch");
+  let currentWrapped = wrapFetch(initialFetch);
+  try {
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return currentWrapped;
+      },
+      set(fn) {
+        if (typeof fn !== "function") return;
+        const raw = fn.__isOciTracer ? fn.__baseFetch : fn;
+        currentWrapped = wrapFetch(raw);
+      }
+    });
+  } catch {
+    globalThis.fetch = currentWrapped;
+  }
 }
 __name(installOciFetchTracer, "installOciFetchTracer");
 
@@ -202810,10 +202928,11 @@ async function runTaskOnce(env, taskId) {
   const lock = await env.DB.prepare(
     "UPDATE task SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)"
   ).bind(now + LOCK_MS, taskId, now).run();
-  if (!lock.meta.changes) return { ok: false, message: "\u4EFB\u52A1\u6B63\u5728\u6267\u884C\u4E2D", launched: 0 };
+  if (!lock.meta?.changes) return { ok: false, message: "\u4EFB\u52A1\u6B63\u5728\u6267\u884C\u4E2D", launched: 0 };
   const trace = taskTrace(env, task);
   return runTraced(trace, async () => {
     let launched = 0;
+    let deleted = false;
     let message = "";
     let nextDelay = task.interval_sec;
     const log = /* @__PURE__ */ __name((level, msg, detail) => trace.publish({ level, source: "task", message: msg, detail }), "log");
@@ -202889,23 +203008,34 @@ async function runTaskOnce(env, taskId) {
             });
             launched++;
             success = true;
+            const currentSuccess = task.success_count + launched;
+            if (currentSuccess >= task.target_count) {
+              await env.DB.prepare("DELETE FROM task WHERE id = ?").bind(taskId).run();
+              deleted = true;
+            } else {
+              await env.DB.prepare("UPDATE task SET success_count = ?, updated_at = ? WHERE id = ?").bind(currentSuccess, nowIso(), taskId).run();
+            }
             const instanceName = resp.instance?.displayName || displayName;
             await log("success", `\u5F00\u673A\u6210\u529F\uFF08${ad}\uFF09${instanceName ? ` \xB7 ${instanceName}` : ""}`, resp.instance?.id ?? "");
-            await notifyLaunchSuccess(env, {
-              task: task.name || task.id,
-              region: task.region,
-              ad,
-              shape: task.shape,
-              ocpus: task.ocpus,
-              memoryGb: task.memory_gb,
-              bootVolumeGb: task.boot_volume_gb,
-              instanceId: resp.instance?.id ?? "",
-              cfgName: cfg.name,
-              instanceName,
-              count: task.success_count + launched,
-              createdAt: task.created_at,
-              accountType: cfg.plan_type
-            });
+            try {
+              await notifyLaunchSuccess(env, {
+                task: task.name || task.id,
+                region: task.region,
+                ad,
+                shape: task.shape,
+                ocpus: task.ocpus,
+                memoryGb: task.memory_gb,
+                bootVolumeGb: task.boot_volume_gb,
+                instanceId: resp.instance?.id ?? "",
+                cfgName: cfg.name,
+                instanceName,
+                count: currentSuccess,
+                createdAt: task.created_at,
+                accountType: cfg.plan_type
+              });
+            } catch (ne) {
+              await log("warn", "\u5F00\u673A\u901A\u77E5\u53D1\u9001\u5F02\u5E38", ne?.message ?? String(ne));
+            }
             break;
           } catch (e) {
             const err = classifyError(e);
@@ -202915,12 +203045,16 @@ async function runTaskOnce(env, taskId) {
               continue;
             }
             if (err.kind === "limit") {
-              await finishTask(env, task, "failed", `\u914D\u989D\u8D85\u9650\uFF1A${err.message}`);
+              if (!deleted) {
+                await finishTask(env, task, "failed", `\u914D\u989D\u8D85\u9650\uFF1A${err.message}`, task.success_count + launched);
+              }
               await log("error", "\u914D\u989D\u8D85\u9650\uFF0C\u4EFB\u52A1\u5DF2\u505C\u6B62", err.message);
               return { ok: false, message: `\u914D\u989D\u8D85\u9650\uFF1A${err.message}`, launched };
             }
             if (err.kind === "auth") {
-              await finishTask(env, task, "failed", `\u8BA4\u8BC1\u5931\u8D25\uFF1A${err.message}`);
+              if (!deleted) {
+                await finishTask(env, task, "failed", `\u8BA4\u8BC1\u5931\u8D25\uFF1A${err.message}`, task.success_count + launched);
+              }
               await env.DB.prepare("UPDATE oci_cfg SET status = 'invalid', last_error = ?, updated_at = ? WHERE id = ?").bind(err.message, nowIso(), cfg.id).run();
               await log("error", "OCI \u8BA4\u8BC1\u5931\u8D25\uFF0C\u4EFB\u52A1\u5DF2\u505C\u6B62", err.message);
               return { ok: false, message: `\u8BA4\u8BC1\u5931\u8D25\uFF1A${err.message}`, launched };
@@ -202935,14 +203069,17 @@ async function runTaskOnce(env, taskId) {
             await log("warn", `\u5F00\u673A\u5931\u8D25\uFF08${ad}\uFF09`, err.message);
           }
         }
-        if (!success) break;
+        if (!success || deleted) break;
       }
       const successCount = task.success_count + launched;
-      const completed = successCount >= task.target_count;
+      const completed = deleted || successCount >= task.target_count;
       const blockReason = errors[0] ?? null;
       message = launched ? `\u672C\u8F6E\u5F00\u673A ${launched} \u53F0\uFF0C\u7D2F\u8BA1 ${successCount}/${task.target_count}` : blockReason ?? "\u672C\u8F6E\u672A\u62A2\u5230\u5BB9\u91CF";
       if (completed) {
-        await env.DB.prepare("DELETE FROM task WHERE id = ?").bind(taskId).run();
+        if (!deleted) {
+          await env.DB.prepare("DELETE FROM task WHERE id = ?").bind(taskId).run();
+          deleted = true;
+        }
         await log("success", `${message}\uFF1B\u4EFB\u52A1\u5DF2\u5B8C\u6210\u5E76\u5220\u9664`);
       } else {
         await env.DB.prepare(
@@ -202963,29 +203100,36 @@ async function runTaskOnce(env, taskId) {
     } catch (e) {
       const err = classifyError(e);
       message = err.message;
+      const currentSuccess = task.success_count + launched;
       if (err.kind === "auth" || err.kind === "limit") {
-        await finishTask(env, task, "failed", err.kind === "auth" ? `\u8BA4\u8BC1\u5931\u8D25\uFF1A${message}` : `\u914D\u989D\u8D85\u9650\uFF1A${message}`);
+        if (!deleted) {
+          await finishTask(env, task, "failed", err.kind === "auth" ? `\u8BA4\u8BC1\u5931\u8D25\uFF1A${message}` : `\u914D\u989D\u8D85\u9650\uFF1A${message}`, currentSuccess);
+        }
         if (err.kind === "auth") {
           await env.DB.prepare("UPDATE oci_cfg SET status = 'invalid', last_error = ?, updated_at = ? WHERE id = ?").bind(message, nowIso(), task.cfg_id).run();
         }
         await log("error", err.kind === "auth" ? "OCI \u8BA4\u8BC1\u5931\u8D25\uFF0C\u4EFB\u52A1\u5DF2\u505C\u6B62" : "\u914D\u989D\u8D85\u9650\uFF0C\u4EFB\u52A1\u5DF2\u505C\u6B62", message);
         return { ok: false, message, launched };
       }
-      await env.DB.prepare(
-        "UPDATE task SET attempt_count = attempt_count + 1, last_error = ?, last_message = ?, next_run_at = ?, updated_at = ? WHERE id = ?"
-      ).bind(message, message, Date.now() + nextDelay * 1e3, nowIso(), taskId).run();
+      if (!deleted) {
+        await env.DB.prepare(
+          "UPDATE task SET success_count = ?, attempt_count = attempt_count + 1, last_error = ?, last_message = ?, next_run_at = ?, updated_at = ? WHERE id = ?"
+        ).bind(currentSuccess, message, message, Date.now() + nextDelay * 1e3, nowIso(), taskId).run();
+      }
       await log("error", "\u6267\u884C\u5F02\u5E38", message);
       return { ok: false, message, launched };
     } finally {
-      await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ?").bind(taskId).run();
+      if (!deleted) {
+        await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ?").bind(taskId).run();
+      }
     }
   });
 }
 __name(runTaskOnce, "runTaskOnce");
-async function finishTask(env, task, status, message) {
+async function finishTask(env, task, status, message, successCount = task.success_count) {
   await env.DB.prepare(
-    "UPDATE task SET status = ?, last_message = ?, last_error = ?, attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?"
-  ).bind(status, message, message, nowIso(), task.id).run();
+    "UPDATE task SET success_count = ?, status = ?, last_message = ?, last_error = ?, attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?"
+  ).bind(successCount, status, message, message, nowIso(), task.id).run();
 }
 __name(finishTask, "finishTask");
 async function runDueTasks(env) {
@@ -203003,42 +203147,55 @@ async function executeDueTasks(env) {
   }
 }
 __name(executeDueTasks, "executeDueTasks");
-async function runIpTaskOnce(env, taskId) {
+async function runIpTaskOnce(env, taskId, opts = {}) {
+  const now = Date.now();
   const task = await env.DB.prepare("SELECT * FROM task WHERE id = ? AND type = 'ip'").bind(taskId).first();
   if (!task) return { ok: false, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728" };
-  const cfg = await getCfg(env, task.cfg_id);
-  if (!cfg) return { ok: false, message: "OCI \u914D\u7F6E\u4E0D\u5B58\u5728" };
-  const cidrs = task.cidr_list ? JSON.parse(task.cidr_list) : [];
-  const instanceId = task.instance_id ?? "";
-  if (!instanceId) return { ok: false, message: "\u4EFB\u52A1\u7F3A\u5C11\u5B9E\u4F8B ID" };
-  const trace = {
-    cfgId: cfg.id,
-    publish: /* @__PURE__ */ __name((entry) => publishEntry(env, { ...entry, cfgId: cfg.id, taskId: task.id }), "publish")
-  };
+  if (!opts.force && task.status !== "running") return { ok: false, message: "\u4EFB\u52A1\u672A\u5728\u8FD0\u884C" };
+  const lock = await env.DB.prepare(
+    "UPDATE task SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)"
+  ).bind(now + LOCK_MS, taskId, now).run();
+  if (!lock.meta?.changes) return { ok: false, message: "\u4EFB\u52A1\u6B63\u5728\u6267\u884C\u4E2D" };
+  const intervalMs = (task.interval_sec || 60) * 1e3;
   try {
-    const clients = await buildClientsFromCfg(env, cfg, task.region);
+    const cfg = await getCfg(env, task.cfg_id);
+    if (!cfg) throw new Error("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
+    const cidrs = task.cidr_list ? JSON.parse(task.cidr_list) : [];
+    const instanceId = task.instance_id ?? "";
+    if (!instanceId) throw new Error("\u4EFB\u52A1\u7F3A\u5C11\u5B9E\u4F8B ID");
+    const trace = {
+      cfgId: cfg.id,
+      publish: /* @__PURE__ */ __name((entry) => publishEntry(env, { ...entry, cfgId: cfg.id, taskId: task.id }), "publish")
+    };
+    const clients = await buildClientsFromCfg(env, cfg, task.region || cfg.region, task.compartment_id || void 0);
     const isV6 = (task.ip_version ?? "ipv4") === "ipv6";
     const result = isV6 ? await runTraced(trace, async () => {
       const r = await changeIpv6(clients, instanceId);
       return { ip: r.ip, attempts: 1 };
     }) : await runTraced(trace, () => changePublicIp(clients, instanceId, cidrs));
-    await env.DB.prepare("DELETE FROM task WHERE id = ?").bind(task.id).run();
+    const successMsg = `\u6362 ${isV6 ? "IPv6" : "IPv4"} \u6210\u529F\uFF1A${result.ip}${isV6 ? "" : `\uFF08\u7B2C ${result.attempts} \u6B21\u5C1D\u8BD5\uFF09`}`;
+    await env.DB.prepare(
+      "UPDATE task SET attempt_count = attempt_count + 1, last_ip = ?, last_message = ?, last_error = NULL, next_run_at = ?, updated_at = ? WHERE id = ?"
+    ).bind(result.ip, successMsg, Date.now() + intervalMs, nowIso(), task.id).run();
     await publishEntry(env, {
       level: "success",
       source: "task",
       taskId: task.id,
       cfgId: cfg.id,
-      message: `\u6362 ${isV6 ? "IPv6" : "IPv4"} \u6210\u529F\uFF1A${result.ip}${isV6 ? "" : `\uFF08\u7B2C ${result.attempts} \u6B21\u5C1D\u8BD5\uFF09`}`
+      message: successMsg
     });
-    const displayName = task.instance_name || await getInstanceDisplayName(clients, instanceId);
-    await notifyIpChanged(env, {
-      region: task.region || cfg.region,
-      cfgName: cfg.name,
-      instance: displayName || instanceId,
-      instanceId,
-      ip: result.ip,
-      version: isV6 ? "ipv6" : "ipv4"
-    });
+    try {
+      const displayName = task.instance_name || await getInstanceDisplayName(clients, instanceId);
+      await notifyIpChanged(env, {
+        region: task.region || cfg.region,
+        cfgName: cfg.name,
+        instance: displayName || instanceId,
+        instanceId,
+        ip: result.ip,
+        version: isV6 ? "ipv6" : "ipv4"
+      });
+    } catch {
+    }
     const dnsRecord = (task.dns_record ?? "").trim();
     if (dnsRecord) {
       try {
@@ -203066,29 +203223,29 @@ async function runIpTaskOnce(env, taskId) {
     return { ok: true, message: result.ip, ip: result.ip };
   } catch (e) {
     const message = e?.message ?? String(e);
-    await env.DB.prepare("UPDATE task SET last_error = ?, updated_at = ? WHERE id = ?").bind(message, nowIso(), task.id).run();
+    await env.DB.prepare(
+      "UPDATE task SET attempt_count = attempt_count + 1, last_error = ?, last_message = ?, next_run_at = ?, updated_at = ? WHERE id = ?"
+    ).bind(message, message, Date.now() + intervalMs, nowIso(), task.id).run();
     await publishEntry(env, {
       level: "error",
       source: "task",
       taskId: task.id,
-      cfgId: cfg.id,
+      cfgId: task.cfg_id,
       message: `\u6362 IP \u5931\u8D25\uFF1A${message}`
     });
     return { ok: false, message };
+  } finally {
+    await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ?").bind(taskId).run();
   }
 }
 __name(runIpTaskOnce, "runIpTaskOnce");
 async function runDueIpTasks(env) {
   const now = Date.now();
   const { results } = await env.DB.prepare(
-    "SELECT * FROM task WHERE type = 'ip' AND status = 'running' AND next_run_at <= ? ORDER BY next_run_at LIMIT 5"
-  ).bind(now).all();
-  for (const task of results ?? []) {
-    const lock = await env.DB.prepare(
-      "UPDATE task SET next_run_at = ?, updated_at = ? WHERE id = ? AND next_run_at = ?"
-    ).bind(now + task.interval_sec * 1e3, nowIso(), task.id, task.next_run_at).run();
-    if (!lock.meta.changes) continue;
-    await runIpTaskOnce(env, task.id);
+    "SELECT id FROM task WHERE type = 'ip' AND status = 'running' AND next_run_at <= ? AND (locked_until IS NULL OR locked_until < ?) ORDER BY next_run_at ASC LIMIT 5"
+  ).bind(now, now).all();
+  for (const r of results ?? []) {
+    await runIpTaskOnce(env, r.id);
   }
 }
 __name(runDueIpTasks, "runDueIpTasks");
@@ -203110,6 +203267,14 @@ var LogHub = class {
     if (request.method === "POST" && url.pathname === "/publish") {
       const entry = await request.json();
       this.broadcast(entry);
+      return new Response("ok");
+    }
+    if (request.method === "POST" && url.pathname === "/publish-batch") {
+      const data = await request.json().catch(() => ({}));
+      const entries = Array.isArray(data?.entries) ? data.entries : Array.isArray(data) ? data : [];
+      for (const entry of entries) {
+        if (entry && typeof entry === "object") this.broadcast(entry);
+      }
       return new Response("ok");
     }
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket") {
@@ -203197,6 +203362,7 @@ var VncTunnel = class {
     const server = pair[1];
     server.accept();
     const early = [];
+    let earlyBytes = 0;
     let bridge = null;
     let chain = Promise.resolve();
     server.addEventListener("message", (event) => {
@@ -203208,8 +203374,13 @@ var VncTunnel = class {
         else if (data instanceof Uint8Array) bytes = data;
         else if (typeof data === "string") bytes = new TextEncoder().encode(data);
         if (!bytes) return;
-        if (bridge) bridge(bytes);
-        else early.push(bytes);
+        if (bridge) {
+          bridge(bytes);
+        } else if (earlyBytes < 65536) {
+          const chunk = earlyBytes + bytes.byteLength <= 65536 ? bytes : bytes.subarray(0, 65536 - earlyBytes);
+          early.push(chunk);
+          earlyBytes += chunk.byteLength;
+        }
       }).catch(() => {
       });
     });
@@ -203231,8 +203402,7 @@ var VncTunnel = class {
     let inner = null;
     let vncChannel = null;
     let wsClosed = false;
-    ws.addEventListener("close", () => {
-      wsClosed = true;
+    const cleanupConnections = /* @__PURE__ */ __name(() => {
       try {
         vncChannel?.close();
       } catch {
@@ -203245,12 +203415,18 @@ var VncTunnel = class {
         outer?.end();
       } catch {
       }
+    }, "cleanupConnections");
+    ws.addEventListener("close", () => {
+      wsClosed = true;
+      cleanupConnections();
     });
     ws.addEventListener("error", () => {
       wsClosed = true;
+      cleanupConnections();
     });
     const timeout = setTimeout(() => {
       if (!vncChannel) {
+        cleanupConnections();
         try {
           ws.close(1011, "ssh tunnel timeout");
         } catch {
@@ -203311,10 +203487,7 @@ var VncTunnel = class {
       }, "connectOuter");
       outer = await connectOuter(3);
       if (wsClosed) {
-        try {
-          outer.end();
-        } catch {
-        }
+        cleanupConnections();
         return;
       }
       const upstream = await new Promise((resolve, reject) => {
@@ -203323,7 +203496,14 @@ var VncTunnel = class {
           else resolve(stream);
         });
       });
-      if (wsClosed) return;
+      if (wsClosed) {
+        try {
+          upstream?.close?.();
+        } catch {
+        }
+        cleanupConnections();
+        return;
+      }
       inner = new Client();
       await new Promise((resolve, reject) => {
         inner.on("ready", () => resolve());
@@ -203344,7 +203524,10 @@ var VncTunnel = class {
           readyTimeout: HANDSHAKE_TIMEOUT
         });
       });
-      if (wsClosed) return;
+      if (wsClosed) {
+        cleanupConnections();
+        return;
+      }
       vncChannel = await new Promise((resolve, reject) => {
         inner.forwardOut("127.0.0.1", 0, session.instanceId, 5900, (err, stream) => {
           if (err) reject(err);
@@ -203353,10 +203536,7 @@ var VncTunnel = class {
       });
       clearTimeout(timeout);
       if (wsClosed) {
-        try {
-          vncChannel.close();
-        } catch {
-        }
+        cleanupConnections();
         return;
       }
       const sendToRfb = /* @__PURE__ */ __name((data) => {
@@ -203387,20 +203567,24 @@ var VncTunnel = class {
         }
       });
       vncChannel.on("close", () => {
+        cleanupConnections();
         try {
           ws.close();
         } catch {
         }
       });
       vncChannel.on("error", () => {
+        cleanupConnections();
         try {
           ws.close();
         } catch {
         }
       });
     } catch (e) {
-      clearTimeout(timeout);
+      cleanupConnections();
       throw e;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 };
@@ -203550,10 +203734,34 @@ function errorMessage(e) {
   return classified.message || String(e);
 }
 __name(errorMessage, "errorMessage");
+function safeWaitUntil(c, promise) {
+  const guarded = Promise.resolve(promise).catch((err) => {
+    console.error("[waitUntil]", err?.message ?? err);
+  });
+  try {
+    c.executionCtx?.waitUntil?.(guarded);
+  } catch {
+  }
+}
+__name(safeWaitUntil, "safeWaitUntil");
+function resolveScope(c, row, body) {
+  const region = (c.req.query("region") || body?.region || row.region || "").trim();
+  const compartment = (reqCompartment(c) || body?.compartment || "").trim() || void 0;
+  return { region, compartment };
+}
+__name(resolveScope, "resolveScope");
 function traceFor(c, cfgId) {
+  const buffer = [];
   return {
     cfgId,
-    publish: /* @__PURE__ */ __name((entry) => publishEntry(c.env, { ...entry, cfgId }), "publish")
+    publish: /* @__PURE__ */ __name((entry) => {
+      buffer.push({ id: crypto.randomUUID(), ts: Date.now(), ...entry, cfgId });
+    }, "publish"),
+    flush: /* @__PURE__ */ __name(async () => {
+      if (!buffer.length) return;
+      const entries = buffer.splice(0, buffer.length);
+      await publishEntriesBatch(c.env, entries);
+    }, "flush")
   };
 }
 __name(traceFor, "traceFor");
@@ -203561,31 +203769,108 @@ function clientIp(c) {
   return c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || c.req.header("x-real-ip") || "";
 }
 __name(clientIp, "clientIp");
+var LOGIN_WINDOW_MS = 6e4;
+var LOGIN_MAX_FAILS = 5;
+var LOGIN_MAX_TG_ALERTS = 3;
+var LOGIN_RATE_MAP_LIMIT = 500;
+var defaultLoginAttempts = /* @__PURE__ */ new Map();
+var loginAttemptsByDb = /* @__PURE__ */ new WeakMap();
+function getLoginAttemptsMap(env) {
+  if (env?.DB && typeof env.DB === "object") {
+    let map = loginAttemptsByDb.get(env.DB);
+    if (!map) {
+      map = /* @__PURE__ */ new Map();
+      loginAttemptsByDb.set(env.DB, map);
+    }
+    return map;
+  }
+  return defaultLoginAttempts;
+}
+__name(getLoginAttemptsMap, "getLoginAttemptsMap");
+function pruneLoginAttemptsMap(map, now) {
+  for (const [k, v] of map) {
+    v.fails = v.fails.filter((t) => now - t < LOGIN_WINDOW_MS);
+    v.alerts = v.alerts.filter((t) => now - t < LOGIN_WINDOW_MS);
+    if (!v.fails.length && !v.alerts.length) map.delete(k);
+  }
+  while (map.size > LOGIN_RATE_MAP_LIMIT) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === void 0) break;
+    map.delete(oldestKey);
+  }
+}
+__name(pruneLoginAttemptsMap, "pruneLoginAttemptsMap");
+function getActiveLoginBucket(map, key, now) {
+  const bucket = map.get(key);
+  if (!bucket) return null;
+  bucket.fails = bucket.fails.filter((t) => now - t < LOGIN_WINDOW_MS);
+  bucket.alerts = bucket.alerts.filter((t) => now - t < LOGIN_WINDOW_MS);
+  if (!bucket.fails.length && !bucket.alerts.length) {
+    map.delete(key);
+    return null;
+  }
+  return bucket;
+}
+__name(getActiveLoginBucket, "getActiveLoginBucket");
+async function recordLoginFailure(env, map, rateKey, ip, reason) {
+  const now = Date.now();
+  if (map.size >= LOGIN_RATE_MAP_LIMIT) pruneLoginAttemptsMap(map, now);
+  let bucket = getActiveLoginBucket(map, rateKey, now);
+  if (!bucket) {
+    bucket = { fails: [], alerts: [] };
+    map.set(rateKey, bucket);
+    if (map.size > LOGIN_RATE_MAP_LIMIT) pruneLoginAttemptsMap(map, now);
+  }
+  bucket.fails.push(now);
+  if (bucket.alerts.length < LOGIN_MAX_TG_ALERTS) {
+    bucket.alerts.push(now);
+    await notifyLogin(env, { ip, account: "admin", ok: false, reason });
+  }
+}
+__name(recordLoginFailure, "recordLoginFailure");
 app.post("/api/login", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const ip = clientIp(c);
+  const rateKey = ip || "local";
+  const attemptsMap = getLoginAttemptsMap(c.env);
+  const now = Date.now();
+  const activeBucket = getActiveLoginBucket(attemptsMap, rateKey, now);
+  if (activeBucket && activeBucket.fails.length >= LOGIN_MAX_FAILS) {
+    return Response.json({ error: "\u767B\u5F55\u5C1D\u8BD5\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7 1 \u5206\u949F\u540E\u518D\u8BD5" }, { status: 429 });
+  }
   const expected = await expectedPasswordHash(c.env);
   const provided = typeof body.password === "string" ? await passwordHash(body.password) : "";
   if (!body.password || !constantTimeEqual(provided, expected)) {
-    await notifyLogin(c.env, { ip, account: "admin", ok: false, reason: "\u5BC6\u7801\u9519\u8BEF" });
+    await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "\u5BC6\u7801\u9519\u8BEF");
     return Response.json({ error: "\u5BC6\u7801\u9519\u8BEF" }, { status: 401 });
   }
   const mfaEnabled = await sysGet(c.env, "mfa.enabled") === "1";
   if (mfaEnabled) {
     const secret = await sysGet(c.env, "mfa.secret");
     if (!secret) {
-      await notifyLogin(c.env, { ip, account: "admin", ok: false, reason: "MFA\u5DF2\u5F00\u542F\u4F46\u5BC6\u94A5\u7F3A\u5931" });
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "MFA\u5DF2\u5F00\u542F\u4F46\u5BC6\u94A5\u7F3A\u5931");
       return Response.json({ error: "\u4E8C\u6B21\u9A8C\u8BC1\u914D\u7F6E\u5F02\u5E38\uFF08\u5BC6\u94A5\u4E22\u5931\uFF09\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458", needCode: false }, { status: 503 });
     }
     if (!body.code) {
-      await notifyLogin(c.env, { ip, account: "admin", ok: false, reason: "MFA\u9A8C\u8BC1\u7801\u4E3A\u7A7A" });
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "MFA\u9A8C\u8BC1\u7801\u4E3A\u7A7A");
       return Response.json({ error: "\u8BF7\u8F93\u5165\u52A8\u6001\u9A8C\u8BC1\u7801", needCode: true }, { status: 401 });
     }
-    if (!await verifyTotp(secret, body.code)) {
-      await notifyLogin(c.env, { ip, account: "admin", ok: false, reason: "MFA\u9A8C\u8BC1\u7801\u9519\u8BEF" });
+    const stepCounter = await verifyTotpWithStep(secret, body.code);
+    if (stepCounter === null) {
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "MFA\u9A8C\u8BC1\u7801\u9519\u8BEF");
       return Response.json({ error: "\u52A8\u6001\u9A8C\u8BC1\u7801\u9519\u8BEF", needCode: true }, { status: 401 });
     }
+    const lastStep = await sysGet(c.env, "mfa.last_step");
+    if (stepCounter <= Number(lastStep || 0)) {
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "MFA\u9A8C\u8BC1\u7801\u91CD\u653E");
+      return Response.json(
+        { error: "\u8BE5\u52A8\u6001\u9A8C\u8BC1\u7801\u5DF2\u4F7F\u7528\uFF0C\u8BF7\u7B49\u5F85\u4E0B\u4E00\u4E2A\u9A8C\u8BC1\u7801", needCode: true },
+        { status: 401 }
+      );
+    }
+    await sysSet(c.env, "mfa.last_step", String(stepCounter));
   }
+  attemptsMap.delete(rateKey);
   await rotateSessionVersion(c.env);
   await notifyLogin(c.env, { ip, account: "admin", ok: true });
   return c.json({ token: await issueToken(await authSecret(c.env), await authVersion(c.env)) });
@@ -203703,13 +203988,11 @@ app.post("/api/vnc/start", async (c) => {
             instanceConsoleConnectionId: s.connectionId
           });
           const st = String(info.instanceConsoleConnection?.lifecycleState ?? "");
-          if ((st === "ACTIVE" || st === "CREATING" || st === "FAILED") && info.instanceConsoleConnection?.vncConnectionString) {
+          if ((st === "ACTIVE" || st === "CREATING") && info.instanceConsoleConnection?.vncConnectionString) {
             reused = { sessionId: row.key.slice(VNC_SESSION_PREFIX2.length), session: s };
             break;
           }
         } catch {
-          reused = { sessionId: row.key.slice(VNC_SESSION_PREFIX2.length), session: s };
-          break;
         }
       } catch {
       }
@@ -203783,8 +204066,8 @@ app.post("/api/vnc/start", async (c) => {
     }, "pruneStale");
     const wsSecret = await authSecret(c.env);
     const token = await signVncToken(wsSecret, sessionId, Date.now() + VNC_TOKEN_TTL);
-    c.executionCtx.waitUntil(cleanupExpiredVncSessions(c.env, clients, cfg));
-    c.executionCtx.waitUntil(pruneStale());
+    safeWaitUntil(c, cleanupExpiredVncSessions(c.env, clients, cfg));
+    safeWaitUntil(c, pruneStale());
     return c.json({ token, ttl: VNC_TOKEN_TTL, warn: warn || void 0 });
   } catch (e) {
     const msg = errorMessage(e);
@@ -203953,8 +204236,7 @@ app.get("/api/sys", async (c) => {
   return c.json({
     items,
     mfaEnabled: await sysGet(c.env, "mfa.enabled") === "1",
-    // 频道推送默认开启，只有显式设为 "0" 才算关闭
-    channelEnabled: await sysGet(c.env, "notify.channel_enabled") !== "0"
+    channelEnabled: await sysGet(c.env, "notify.channel_enabled") === "1"
   });
 });
 app.put("/api/sys", async (c) => {
@@ -203964,7 +204246,13 @@ app.put("/api/sys", async (c) => {
   return c.json({ ok: true });
 });
 app.delete("/api/sys/:key", async (c) => {
-  await c.env.DB.prepare("DELETE FROM sys_cfg WHERE key = ?").bind(c.req.param("key")).run();
+  const key = c.req.param("key");
+  const def = SYS_DEFS.find((d) => d.key === key && !d.hidden);
+  if (!def) return badRequest("\u4E0D\u652F\u6301\u5220\u9664\u8BE5\u914D\u7F6E\u9879");
+  if (key === "mfa.secret" && await sysGet(c.env, "mfa.enabled") === "1") {
+    return badRequest("\u8BF7\u5148\u5173\u95ED\u767B\u5F55\u4E8C\u6B21\u9A8C\u8BC1\u518D\u6E05\u9664 MFA \u5BC6\u94A5");
+  }
+  await c.env.DB.prepare("DELETE FROM sys_cfg WHERE key = ?").bind(key).run();
   return c.json({ ok: true });
 });
 app.post("/api/sys/totp/generate", async (c) => {
@@ -204327,7 +204615,8 @@ app.post("/api/cfgs/:id/instances/:iid/action", async (c) => {
   const action = (body.action ?? "").toUpperCase();
   if (!["START", "STOP", "RESET", "SOFTRESET", "SOFTSTOP"].includes(action)) return badRequest("\u4E0D\u652F\u6301\u7684\u64CD\u4F5C");
   try {
-    const clients = await clientsFor(c.env, row);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(traceFor(c, row.id), () => instanceAction(clients, c.req.param("iid"), action));
     return c.json({ ok: true });
   } catch (e) {
@@ -204337,9 +204626,11 @@ app.post("/api/cfgs/:id/instances/:iid/action", async (c) => {
 app.delete("/api/cfgs/:id/instances/:iid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
+  const body = await c.req.json().catch(() => ({}));
   const preserve = c.req.query("preserveBootVolume") === "1";
   try {
-    const clients = await clientsFor(c.env, row);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(traceFor(c, row.id), () => terminateInstance(clients, c.req.param("iid"), preserve));
     return c.json({ ok: true });
   } catch (e) {
@@ -204350,7 +204641,8 @@ app.get("/api/cfgs/:id/instances/:iid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region, reqCompartment(c));
+    const { region, compartment } = resolveScope(c, row);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const item = await runTraced(traceFor(c, row.id), () => getInstanceDetail(clients, c.req.param("iid")));
     return c.json({ item });
   } catch (e) {
@@ -204363,14 +204655,15 @@ app.post("/api/cfgs/:id/instances/:iid/change-ip", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const cidrs = (body.cidrList ?? []).map((x) => String(x).trim()).filter(Boolean);
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const result = await runTraced(
       traceFor(c, row.id),
       () => changePublicIp(clients, c.req.param("iid"), cidrs)
     );
     const displayName = await getInstanceDisplayName(clients, c.req.param("iid"));
     await notifyIpChanged(c.env, {
-      region: c.req.query("region") || row.region,
+      region,
       cfgName: row.name,
       instance: displayName || c.req.param("iid"),
       instanceId: c.req.param("iid"),
@@ -204432,7 +204725,18 @@ app.get("/api/ip-tasks", async (c) => {
     `SELECT t.*, cfg.name AS cfg_name FROM task t LEFT JOIN oci_cfg cfg ON cfg.id = t.cfg_id
      WHERE t.type = 'ip' ORDER BY t.created_at DESC LIMIT ? OFFSET ?`
   ).bind(pageSize, offset).all();
-  return c.json({ items: (results ?? []).map(publicTask), total: totalRow?.n ?? 0, page, pageSize });
+  return c.json({
+    items: (results ?? []).map((r) => ({
+      ...publicTask(r),
+      changeCount: r.attempt_count ?? 0,
+      dnsRecord: r.dns_record ?? "",
+      dnsZoneId: r.dns_zone_id ?? "",
+      dnsProxied: r.dns_proxied === 1
+    })),
+    total: totalRow?.n ?? 0,
+    page,
+    pageSize
+  });
 });
 app.get("/api/cfgs/:id/ip-tasks", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
@@ -204449,7 +204753,9 @@ app.post("/api/cfgs/:id/ip-tasks", async (c) => {
   if (!body.instanceId) return badRequest("\u8BF7\u9009\u62E9\u5B9E\u4F8B");
   const ipVersion = body.ipVersion === "ipv6" ? "ipv6" : "ipv4";
   const cidrs = ipVersion === "ipv6" ? [] : (body.cidrList ?? []).map((x) => String(x).trim()).filter(Boolean);
-  const interval = Math.min(Math.max(Number(body.intervalSec ?? 60), 60), 3600);
+  const rawInterval = body.intervalSec === void 0 || body.intervalSec === null ? 60 : Number(body.intervalSec);
+  if (!Number.isFinite(rawInterval)) return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
+  const interval = Math.min(Math.max(rawInterval, 60), 3600);
   const dnsRecord = (body.dnsRecord ?? "").trim();
   const dnsZoneId = (body.dnsZoneId ?? "").trim();
   const id = randomId("ipt");
@@ -204471,19 +204777,27 @@ app.post("/api/cfgs/:id/ip-tasks", async (c) => {
     dnsZoneId || null,
     body.dnsProxied ? 1 : 0,
     interval,
-    Date.now(),
+    Date.now() + interval * 1e3,
     ts,
     ts
   ).run();
-  c.executionCtx.waitUntil(runIpTaskOnce(c.env, id));
+  safeWaitUntil(c, runIpTaskOnce(c.env, id));
   return c.json({ id });
 });
 app.patch("/api/ip-tasks/:tid", async (c) => {
   const id = c.req.param("tid");
   const body = await c.req.json().catch(() => ({}));
   if (!body.status || !["running", "paused"].includes(body.status)) return badRequest("\u72B6\u6001\u4E0D\u5408\u6CD5");
-  await c.env.DB.prepare("UPDATE task SET status = ?, next_run_at = ?, updated_at = ? WHERE id = ? AND type = 'ip'").bind(body.status, body.status === "running" ? Date.now() : 0, nowIso2(), id).run();
-  if (body.status === "running") c.executionCtx.waitUntil(runIpTaskOnce(c.env, id));
+  let intervalSec = 60;
+  try {
+    const existing = await c.env.DB.prepare("SELECT * FROM task WHERE id = ? AND type = 'ip'").bind(id).first();
+    if (existing?.interval_sec) intervalSec = Number(existing.interval_sec) || 60;
+  } catch {
+  }
+  await c.env.DB.prepare(
+    "UPDATE task SET status = ?, next_run_at = ?, locked_until = NULL, updated_at = ? WHERE id = ? AND type = 'ip'"
+  ).bind(body.status, body.status === "running" ? Date.now() + intervalSec * 1e3 : 0, nowIso2(), id).run();
+  if (body.status === "running") safeWaitUntil(c, runIpTaskOnce(c.env, id));
   return c.json({ ok: true });
 });
 app.delete("/api/ip-tasks/:tid", async (c) => {
@@ -204491,7 +204805,7 @@ app.delete("/api/ip-tasks/:tid", async (c) => {
   return c.json({ ok: true });
 });
 app.post("/api/ip-tasks/:tid/run", async (c) => {
-  const result = await runIpTaskOnce(c.env, c.req.param("tid"));
+  const result = await runIpTaskOnce(c.env, c.req.param("tid"), { force: true });
   return c.json(result);
 });
 app.post("/api/cfgs/:id/instances/:iid/change-ipv6", async (c) => {
@@ -204499,11 +204813,12 @@ app.post("/api/cfgs/:id/instances/:iid/change-ipv6", async (c) => {
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const result = await runTraced(traceFor(c, row.id), () => changeIpv6(clients, c.req.param("iid")));
     const displayName = await getInstanceDisplayName(clients, c.req.param("iid"));
     await notifyIpChanged(c.env, {
-      region: c.req.query("region") || row.region,
+      region,
       cfgName: row.name,
       instance: displayName || c.req.param("iid"),
       instanceId: c.req.param("iid"),
@@ -204530,7 +204845,8 @@ app.post("/api/cfgs/:id/instances/:iid/ipv6", async (c) => {
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const result = await runTraced(
       traceFor(c, row.id),
       () => toggleIpv6(clients, c.req.param("iid"), body.enable !== false)
@@ -204546,7 +204862,8 @@ app.patch("/api/cfgs/:id/instances/:iid/spec", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   if (!body.ocpus && !body.memoryGb) return badRequest("\u8BF7\u586B\u5199 OCPU \u6216\u5185\u5B58");
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(
       traceFor(c, row.id),
       () => updateInstanceSpec(clients, c.req.param("iid"), {
@@ -204577,7 +204894,8 @@ app.post("/api/cfgs/:id/instances/:iid/dns", async (c) => {
   const record = (body.record ?? "").trim();
   if (!record) return badRequest("\u8BF7\u9009\u62E9\u8981\u66F4\u65B0\u7684\u57DF\u540D\u8BB0\u5F55");
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const ips = await runTraced(traceFor(c, row.id), () => getInstanceIps(clients, c.req.param("iid")));
     const ip = ips.publicIps[0];
     if (!ip) return badRequest("\u5B9E\u4F8B\u6CA1\u6709\u516C\u7F51 IP\uFF0C\u65E0\u6CD5\u540C\u6B65 DNS");
@@ -204687,11 +205005,12 @@ app.post("/api/cfgs/:id/traffic/data", async (c) => {
   const interval = ["1m", "60m", "1440m"].includes(body.interval || "") ? body.interval : "60m";
   if (!body.vnicId) return badRequest("\u8BF7\u9009\u62E9 VNIC");
   try {
-    const clients = await clientsFor(c.env, row, body.region || row.region, reqCompartment(c));
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const data = await runTraced(
       traceFor(c, row.id),
       () => getTrafficData(clients, {
-        region: body.region || row.region,
+        region,
         vnicId: body.vnicId,
         interval,
         start: body.start || "",
@@ -204709,11 +205028,12 @@ app.post("/api/cfgs/:id/traffic/summary", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const now = /* @__PURE__ */ new Date();
   try {
-    const clients = await clientsFor(c.env, row, body.region || row.region, reqCompartment(c));
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const data = await runTraced(
       traceFor(c, row.id),
       () => getMonthlyTraffic(clients, {
-        region: body.region || row.region,
+        region,
         year: Number(body.year ?? now.getUTCFullYear()),
         month: Number(body.month ?? now.getUTCMonth() + 1)
       })
@@ -204910,7 +205230,8 @@ app.get("/api/cfgs/:id/instance-ips/:iid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
-    const clients = await clientsFor(c.env, row);
+    const { region, compartment } = resolveScope(c, row);
+    const clients = await clientsFor(c.env, row, region, compartment);
     return c.json(await runTraced(traceFor(c, row.id), () => getInstanceIps(clients, c.req.param("iid"))));
   } catch (e) {
     return Response.json({ error: errorMessage(e) }, { status: 400 });
@@ -204981,11 +205302,12 @@ app.post("/api/cfgs/:id/batch-launch", async (c) => {
   const arch = (body.arch ?? "").trim().toUpperCase();
   if (!["ARM", "AMD"].includes(arch)) return badRequest("\u53EA\u80FD\u9009\u62E9\u514D\u8D39\u7684 ARM (A1.Flex) \u6216 AMD (E2.1.Micro)");
   try {
-    const clients = await clientsFor(c.env, row, body.region || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const result = await runTraced(
       traceFor(c, row.id),
       () => batchLaunch(clients, {
-        region: body.region,
+        region,
         arch,
         count: Number(body.count ?? 1),
         ocpus: body.ocpus,
@@ -204999,7 +205321,7 @@ app.post("/api/cfgs/:id/batch-launch", async (c) => {
     for (const [i, it] of result.items.entries()) {
       await notifyLaunchSuccess(c.env, {
         task: it.name,
-        region: body.region || row.region,
+        region,
         ad: body.availabilityDomain || "",
         shape: result.shape,
         ocpus: arch === "ARM" ? Number(body.ocpus ?? 1) : 1,
@@ -205025,9 +205347,9 @@ app.post("/api/cfgs/:id/network", async (c) => {
   const cidrRe = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
   if (body.vcnCidr && !cidrRe.test(body.vcnCidr)) return badRequest("VCN \u7F51\u6BB5\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u4F8B\u5982 10.0.0.0/16");
   if (body.subnetCidr && !cidrRe.test(body.subnetCidr)) return badRequest("\u5B50\u7F51\u7F51\u6BB5\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u4F8B\u5982 10.0.0.0/24");
-  const region = body.region || row.region;
+  const { region, compartment } = resolveScope(c, row, body);
   try {
-    const clients = await clientsFor(c.env, row, region, body.compartment);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const result = await runTraced(
       traceFor(c, row.id),
       () => ensureDefaultNetwork(clients, { vcnCidr: body.vcnCidr, subnetCidr: body.subnetCidr })
@@ -205041,7 +205363,8 @@ app.get("/api/cfgs/:id/boot-volumes", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region, reqCompartment(c));
+    const { region, compartment } = resolveScope(c, row);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const items = await runTraced(
       traceFor(c, row.id),
       () => listBootVolumes(clients, c.req.query("ad") || void 0)
@@ -205056,7 +205379,8 @@ app.patch("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const size = body.sizeInGBs ? Math.max(Number(body.sizeInGBs), 1) : void 0;
     const vpus = body.vpusPerGB !== void 0 ? Math.min(Math.max(Number(body.vpusPerGB), 0), 120) : void 0;
     await runTraced(
@@ -205071,8 +205395,10 @@ app.patch("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
 app.delete("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
+  const body = await c.req.json().catch(() => ({}));
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(traceFor(c, row.id), () => deleteBootVolume(clients, c.req.param("bid")));
     return c.json({ ok: true });
   } catch (e) {
@@ -205083,7 +205409,8 @@ app.get("/api/cfgs/:id/network", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region, reqCompartment(c));
+    const { region, compartment } = resolveScope(c, row);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const data = await runTraced(traceFor(c, row.id), () => getNetworkOverview(clients));
     return c.json(data);
   } catch (e) {
@@ -205094,7 +205421,8 @@ app.get("/api/cfgs/:id/security-lists/:sid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const item = await runTraced(
       traceFor(c, row.id),
       () => getSecurityListDetail(clients, c.req.param("sid"))
@@ -205110,13 +205438,15 @@ app.post("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const direction = body.direction === "egress" ? "egress" : "ingress";
   const protocol = body.protocol || "6";
+  const parseOptInt = (v) => v !== void 0 && v !== null && v !== "" && typeof v !== "boolean" && String(v).trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : void 0;
   const portMin = body.portMin ? Number(body.portMin) : void 0;
   const portMax = body.portMax ? Number(body.portMax) : void 0;
   if ((protocol === "6" || protocol === "17") && !portMin) return badRequest("TCP / UDP \u89C4\u5219\u9700\u8981\u586B\u5199\u7AEF\u53E3");
   if (portMin && (portMin < 1 || portMin > 65535)) return badRequest("\u7AEF\u53E3\u9700\u5728 1-65535 \u4E4B\u95F4");
   if (portMax && (portMax < portMin || portMax > 65535)) return badRequest("\u7ED3\u675F\u7AEF\u53E3\u9700\u5927\u4E8E\u7B49\u4E8E\u8D77\u59CB\u7AEF\u53E3");
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     const result = await runTraced(
       traceFor(c, row.id),
       () => addSecurityRule(clients, c.req.param("sid"), {
@@ -205124,8 +205454,8 @@ app.post("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
         protocol,
         portMin,
         portMax,
-        icmpType: body.icmpType ? Number(body.icmpType) : void 0,
-        icmpCode: body.icmpCode ? Number(body.icmpCode) : void 0,
+        icmpType: parseOptInt(body.icmpType),
+        icmpCode: parseOptInt(body.icmpCode),
         source: body.source,
         destination: body.destination,
         description: body.description
@@ -205139,11 +205469,13 @@ app.post("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
 app.delete("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
+  const body = await c.req.json().catch(() => ({}));
   const index = Number(c.req.query("index"));
   const direction = c.req.query("direction") === "egress" ? "egress" : "ingress";
   if (Number.isNaN(index)) return badRequest("\u7F3A\u5C11\u89C4\u5219\u7D22\u5F15");
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(
       traceFor(c, row.id),
       () => removeSecurityRule(clients, c.req.param("sid"), direction, index)
@@ -205156,8 +205488,10 @@ app.delete("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
 app.delete("/api/cfgs/:id/subnets/:sid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
+  const body = await c.req.json().catch(() => ({}));
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(traceFor(c, row.id), () => deleteSubnet(clients, c.req.param("sid")));
     return c.json({ ok: true });
   } catch (e) {
@@ -205167,8 +205501,10 @@ app.delete("/api/cfgs/:id/subnets/:sid", async (c) => {
 app.delete("/api/cfgs/:id/vcns/:vid", async (c) => {
   const row = await getCfg2(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
+  const body = await c.req.json().catch(() => ({}));
   try {
-    const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
+    const { region, compartment } = resolveScope(c, row, body);
+    const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(traceFor(c, row.id), () => deleteVcn(clients, c.req.param("vid")));
     return c.json({ ok: true });
   } catch (e) {
@@ -205253,16 +205589,34 @@ app.get("/api/tasks", async (c) => {
     pageSize
   });
 });
+function parseFiniteNum(v, fallback) {
+  if (v === void 0 || v === null) return fallback;
+  if (typeof v === "boolean" || typeof v === "string" && !v.trim()) return NaN;
+  return Number(v);
+}
+__name(parseFiniteNum, "parseFiniteNum");
 app.post("/api/tasks", async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.cfgId) return badRequest("\u8BF7\u9009\u62E9 OCI \u914D\u7F6E");
   const cfg = await getCfg2(c.env, body.cfgId);
   if (!cfg) return badRequest("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
-  const target = Math.min(Math.max(Number(body.targetCount ?? 1), 1), 50);
-  const interval = Math.min(Math.max(Number(body.intervalSec ?? 60), 30), 3600);
-  const ocpus = Number(body.ocpus ?? 1);
-  const memoryGb = Number(body.memoryGb ?? 6);
-  const bootVolumeGb = Math.max(Number(body.bootVolumeGb ?? 50), 50);
+  const rawTarget = parseFiniteNum(body.targetCount, 1);
+  const rawInterval = parseFiniteNum(body.intervalSec, 60);
+  const ocpus = parseFiniteNum(body.ocpus, 1);
+  const memoryGb = parseFiniteNum(body.memoryGb, 6);
+  const rawBootVolumeGb = parseFiniteNum(body.bootVolumeGb, 50);
+  if (
+    !Number.isFinite(rawTarget) ||
+    !Number.isFinite(rawInterval) ||
+    !Number.isFinite(ocpus) ||
+    !Number.isFinite(memoryGb) ||
+    !Number.isFinite(rawBootVolumeGb)
+  ) {
+    return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
+  }
+  const target = Math.min(Math.max(rawTarget, 1), 50);
+  const interval = Math.min(Math.max(rawInterval, 30), 3600);
+  const bootVolumeGb = Math.max(rawBootVolumeGb, 50);
   if (ocpus <= 0 || memoryGb <= 0) return badRequest("CPU / \u5185\u5B58\u5FC5\u987B\u5927\u4E8E 0");
   const rootPassword = (body.rootPassword ?? "").trim();
   const sshPublicKey = (body.sshPublicKey ?? "").trim();
@@ -205309,7 +205663,7 @@ app.post("/api/tasks", async (c) => {
     cfgId: body.cfgId,
     message: "\u4EFB\u52A1\u5DF2\u521B\u5EFA\uFF0C\u7ACB\u5373\u5F00\u59CB\u6267\u884C\uFF08\u4E4B\u540E\u6309 Cron \u5468\u671F\u7EE7\u7EED\uFF09"
   });
-  c.executionCtx.waitUntil(runTaskOnce(c.env, id));
+  safeWaitUntil(c, runTaskOnce(c.env, id));
   return c.json({ id });
 });
 app.patch("/api/tasks/:id", async (c) => {
@@ -205328,12 +205682,16 @@ app.patch("/api/tasks/:id", async (c) => {
     values.push(body.status, body.status === "running" ? Date.now() : task.next_run_at);
   }
   if (body.targetCount !== void 0) {
+    const n = parseFiniteNum(body.targetCount, NaN);
+    if (!Number.isFinite(n)) return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
     sets.push("target_count = ?");
-    values.push(Math.min(Math.max(Number(body.targetCount), 1), 50));
+    values.push(Math.min(Math.max(n, 1), 50));
   }
   if (body.intervalSec !== void 0) {
+    const n = parseFiniteNum(body.intervalSec, NaN);
+    if (!Number.isFinite(n)) return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
     sets.push("interval_sec = ?");
-    values.push(Math.min(Math.max(Number(body.intervalSec), 30), 3600));
+    values.push(Math.min(Math.max(n, 30), 3600));
   }
   if (body.rootPassword !== void 0) {
     const pwd = body.rootPassword.trim();
@@ -205365,16 +205723,22 @@ app.patch("/api/tasks/:id", async (c) => {
     values.push(shapeOf(body.shape));
   }
   if (body.ocpus !== void 0) {
+    const n = parseFiniteNum(body.ocpus, NaN);
+    if (!Number.isFinite(n)) return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
     sets.push("ocpus = ?");
-    values.push(Math.min(Math.max(Number(body.ocpus), 1), 64));
+    values.push(Math.min(Math.max(n, 1), 64));
   }
   if (body.memoryGb !== void 0) {
+    const n = parseFiniteNum(body.memoryGb, NaN);
+    if (!Number.isFinite(n)) return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
     sets.push("memory_gb = ?");
-    values.push(Math.min(Math.max(Number(body.memoryGb), 1), 512));
+    values.push(Math.min(Math.max(n, 1), 512));
   }
   if (body.bootVolumeGb !== void 0) {
+    const n = parseFiniteNum(body.bootVolumeGb, NaN);
+    if (!Number.isFinite(n)) return badRequest("\u6570\u503C\u53C2\u6570\u683C\u5F0F\u4E0D\u6B63\u786E");
     sets.push("boot_volume_gb = ?");
-    values.push(Math.max(Number(body.bootVolumeGb), 50));
+    values.push(Math.max(n, 50));
   }
   if (body.osName !== void 0) {
     const os = osFilter(body.osName);
@@ -205405,7 +205769,7 @@ app.patch("/api/tasks/:id", async (c) => {
     message: `\u4EFB\u52A1\u5DF2\u66F4\u65B0\uFF08${body.status ?? "\u53C2\u6570"}\uFF09`
   });
   if (body.status === "running" && task.status !== "running") {
-    c.executionCtx.waitUntil(runTaskOnce(c.env, id));
+    safeWaitUntil(c, runTaskOnce(c.env, id));
   }
   return c.json({ ok: true });
 });
@@ -205465,9 +205829,15 @@ __name(cleanupTempData, "cleanupTempData");
 var index_default = {
   fetch: app.fetch,
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(executeDueTasks(env));
-    ctx.waitUntil(runDueIpTasks(env));
-    ctx.waitUntil(cleanupTempData(env));
+    const work = (async () => {
+      await ensureSchema(env);
+      await Promise.allSettled([executeDueTasks(env), runDueIpTasks(env), cleanupTempData(env)]);
+    })();
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(work);
+    } else {
+      await work;
+    }
   }
 };
 export {
@@ -205489,4 +205859,3 @@ es6-promise/dist/es6-promise.js:
    * @version   v4.2.6+9869a4bc
    *)
 */
-//# sourceMappingURL=index.js.map
