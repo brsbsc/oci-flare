@@ -44,22 +44,15 @@
    - 进入 **Workers & Pages → 创建 → 连接 GitHub**，选择本仓库（`brsbsc/oci-helper-serverless-cf`）。
 3. **配置构建变量与命令（Worker → Settings → Build）**：
    - 在 **Build variables（构建变量）** 中添加（建议勾选 Encrypt 加密）：
-     - `D1_DATABASE_ID` = `<你的 D1 Database ID>`
-     - 若你的 D1 数据库名称不是 `oci-helper-serverless`，再添加一个 `D1_DATABASE_NAME` = `<你的 D1 数据库名称>`
-   - **Build command（构建命令）**：
-     - 如果 D1 名称为 `oci-helper-serverless`：
-       ```bash
-       sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/${D1_DATABASE_ID}/g" wrangler.toml
-       ```
-     - 如果使用了自定义 D1 名称：
-       ```bash
-       sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/${D1_DATABASE_ID}/g; s/database_name = \"oci-helper-serverless\"/database_name = \"${D1_DATABASE_NAME}\"/g" wrangler.toml
-       ```
-   - **Deploy command（部署命令）**（把 `<你的Worker名>` 替换为实际的 Worker 名称，如 `oci-helper-serverless-cf`）：
+     - `D1_DATABASE_ID` = `<你的 D1 Database ID>`（**必填**，缺失时会直接中止部署，防止误清远端 `DB` 绑定）
+     - `WORKER_NAME` = `<你的 Worker 名称>`（如 `oci-helper-serverless-cf`；若与默认 `oci-helper-serverless` 一致可不填）
+     - `D1_DATABASE_NAME` = `<你的 D1 数据库名称>`（若与默认 `oci-helper-serverless` 一致可不填）
+   - **Build command（构建命令）**：留空即可
+   - **Deploy command（部署命令）**：
      ```bash
-     npx wrangler deploy --name <你的Worker名>
+     node scripts/cf-deploy.mjs
      ```
-4. 保存并触发部署，后续每次 `git push` 自动部署都会自动保持 `DB` 绑定不丢失。
+4. 保存并触发部署，后续每次 `git push` 自动部署都会自动带上真实 `DB` 绑定，不会再解绑。
 
 <details>
 <summary>备选：使用 wrangler.import.toml 手动绑定（仅适合一次性手动部署）</summary>
