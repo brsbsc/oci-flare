@@ -65,26 +65,26 @@ const ye=defineComponent({
               ]),
               cur?.tenancyOcid?(openBlock(),createElementBlock("div",{key:0,class:"cfg-context-ocid"},[
                 createElementVNode("span",{class:"truncate",title:cur.tenancyOcid},toDisplayString(cur.tenancyOcid),9,["title"]),
-                createElementVNode("button",{type:"button",class:"shrink-0 rounded p-0.5 text-slate-400 hover:text-white",title:"复制 Tenancy OCID","aria-label":"复制 Tenancy OCID",onClick:copyOcid},[createVNode(unref(CopyIcon),{class:"size-3"})])
+                createElementVNode("button",{type:"button",class:"shrink-0 rounded p-1 text-slate-400 hover:text-white",title:"复制 Tenancy OCID","aria-label":"复制 Tenancy OCID",onClick:copyOcid},[createVNode(unref(CopyIcon),{class:"size-3"})])
               ])):createCommentVNode("",!0)
             ]),
             createVNode(UiButton,{size:"sm",variant:"secondary",loading:loading.value,title:"刷新账号配置","aria-label":"刷新账号配置",onClick:loadCfg},{default:withCtx(()=>[createVNode(unref(RefreshIcon),{class:"size-3.5"}),createElementVNode("span",{class:"hidden sm:inline"},"刷新配置")]),_:1},8,["loading"])
           ]),
           createElementVNode("div",{class:"cfg-context-scope"},[
             createElementVNode("span",{class:"text-xs font-medium text-slate-400"},"作用范围"),
-            createElementVNode("label",{class:"inline-flex items-center gap-1.5 text-xs text-slate-500"},[
+            createElementVNode("label",{class:"inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-slate-500"},[
               createTextVNode("区域"),
               createElementVNode("select",{class:"field h-8 w-44 py-0 text-xs",value:unref(region),title:"区域（Region）",onChange:e=>unref(setRegion)(e.target.value)},[
                 (openBlock(!0),createElementBlock(Fragment,null,renderList(unref(regions),r=>(openBlock(),createElementBlock("option",{key:r,value:r},toDisplayString(r),9,["value"]))),128))
               ],40,["value"])
             ]),
-            createElementVNode("label",{class:"inline-flex items-center gap-1.5 text-xs text-slate-500"},[
+            createElementVNode("label",{class:"inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-slate-500"},[
               createTextVNode("区间"),
               createElementVNode("select",{class:"field h-8 w-56 py-0 text-xs",value:unref(compartment),title:"区间（Compartment）",onChange:e=>unref(setCompartment)(e.target.value)},[
                 (openBlock(!0),createElementBlock(Fragment,null,renderList(unref(compartments),c=>(openBlock(),createElementBlock("option",{key:c.id,value:c.id},toDisplayString(c.path),9,["value"]))),128))
               ],40,["value"])
             ]),
-            createElementVNode("span",{class:"hidden text-[11px] text-slate-500 lg:inline"},"切换后全部子标签同步生效")
+            createElementVNode("span",{class:"hidden text-[11px] text-slate-500 sm:inline"},"切换后全部子标签同步生效")
           ])
         ]),
         createElementVNode("nav",{class:"cfg-tabs","aria-label":"租户子页面"},[

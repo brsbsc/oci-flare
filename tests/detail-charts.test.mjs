@@ -11,6 +11,7 @@ test("CfgDetailView uses unified .cfg-context-card, clickable OCID copy, distinc
   assert.match(src, /cfg-tab/);
   assert.match(src, /clipboard\.writeText/);
   assert.match(src, /刷新账号配置/);
+  assert.match(src, /whitespace-nowrap/);
   assert.match(src, /export\{[A-Za-z0-9_$]+ as default\}/);
 });
 

@@ -1,53 +1,104 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark" data-style="precision">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Cloud Shell · noVNC</title>
+    <script>
+        try {
+            var r = document.documentElement;
+            var st = localStorage.getItem("oci_mini_style");
+            r.dataset.style = st === "bento" || st === "cockpit" ? st : "precision";
+            var th = localStorage.getItem("oci_mini_theme") === "light" ? "light" : "dark";
+            r.classList.toggle("light", th === "light");
+            r.classList.toggle("dark", th === "dark");
+            r.style.colorScheme = th;
+        } catch (e) {}
+    </script>
     <style>
-        html, body { height: 100%; margin: 0; background: #0b1120; color: #e2e8f0; font-family: system-ui, sans-serif; }
+        :root, html[data-style="precision"], html[data-style="precision"].dark {
+            --vnc-bg: #090D16; --vnc-bar: #111827; --vnc-btn: #182235; --vnc-btn-hover: #243247;
+            --vnc-border: rgba(148,163,184,0.22); --vnc-fg: #F8FAFC; --vnc-muted: #94A3B8;
+            --vnc-primary: #2563EB; --vnc-primary-border: #3B82F6; --vnc-on-primary: #FFFFFF;
+            --vnc-danger: #DC2626; --vnc-danger-fg: #FEE2E2; --vnc-radius: 8px;
+            --vnc-font: "IBM Plex Sans", system-ui, sans-serif; --vnc-mono: "JetBrains Mono", ui-monospace, monospace;
+        }
+        html[data-style="precision"].light {
+            --vnc-bg: #F8FAFC; --vnc-bar: #FFFFFF; --vnc-btn: #F1F5F9; --vnc-btn-hover: #E2E8F0;
+            --vnc-border: #CBD5E1; --vnc-fg: #0F172A; --vnc-muted: #475569;
+            --vnc-primary: #1D4ED8; --vnc-primary-border: #1E40AF; --vnc-on-primary: #FFFFFF;
+            --vnc-danger: #DC2626; --vnc-danger-fg: #FFFFFF;
+        }
+        html[data-style="bento"], html[data-style="bento"].dark {
+            --vnc-bg: #0C111D; --vnc-bar: #161F30; --vnc-btn: #1D2939; --vnc-btn-hover: #29384D;
+            --vnc-border: rgba(255,255,255,0.14); --vnc-fg: #F9FAFB; --vnc-muted: #98A2B3;
+            --vnc-primary: #2563EB; --vnc-primary-border: #3B82F6; --vnc-on-primary: #FFFFFF;
+            --vnc-danger: #DC2626; --vnc-danger-fg: #FEE2E2; --vnc-radius: 10px;
+            --vnc-font: "Plus Jakarta Sans", system-ui, sans-serif; --vnc-mono: "JetBrains Mono", ui-monospace, monospace;
+        }
+        html[data-style="bento"].light {
+            --vnc-bg: #F3F5F9; --vnc-bar: #FFFFFF; --vnc-btn: #F1F5F9; --vnc-btn-hover: #E2E8F0;
+            --vnc-border: #CBD5E1; --vnc-fg: #0F172A; --vnc-muted: #475569;
+            --vnc-primary: #2563EB; --vnc-primary-border: #1D4ED8; --vnc-on-primary: #FFFFFF;
+            --vnc-danger: #DC2626; --vnc-danger-fg: #FFFFFF;
+        }
+        html[data-style="cockpit"], html[data-style="cockpit"].dark {
+            --vnc-bg: #070B14; --vnc-bar: #10192B; --vnc-btn: #162238; --vnc-btn-hover: #1E2E4A;
+            --vnc-border: rgba(56,189,248,0.22); --vnc-fg: #F1F5F9; --vnc-muted: #94A3B8;
+            --vnc-primary: #22C55E; --vnc-primary-border: #4ADE80; --vnc-on-primary: #052E16;
+            --vnc-danger: #DC2626; --vnc-danger-fg: #FEE2E2; --vnc-radius: 6px;
+            --vnc-font: "Fira Sans", system-ui, sans-serif; --vnc-mono: "Fira Code", ui-monospace, monospace;
+        }
+        html[data-style="cockpit"].light {
+            --vnc-bg: #EFF3F8; --vnc-bar: #FFFFFF; --vnc-btn: #F1F5F9; --vnc-btn-hover: #DCE6F2;
+            --vnc-border: #CBD5E1; --vnc-fg: #0F172A; --vnc-muted: #475569;
+            --vnc-primary: #047857; --vnc-primary-border: #065F46; --vnc-on-primary: #FFFFFF;
+            --vnc-danger: #DC2626; --vnc-danger-fg: #FFFFFF;
+        }
+
+        html, body { height: 100%; margin: 0; background: var(--vnc-bg); color: var(--vnc-fg); font-family: var(--vnc-font); }
         body { display: flex; flex-direction: column; }
 
         /* 工具栏：分组排列，组间留白+分隔线，降低误触 */
-        #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: #111a2e; border-bottom: 1px solid #1e293b; }
-        #status { flex: 1 1 140px; min-width: 110px; font-size: 12px; color: #cbd5e1; }
+        #bar { position: relative; z-index: 35; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vnc-bar); border-bottom: 1px solid var(--vnc-border); }
+        #status { flex: 1 1 140px; min-width: 110px; font-size: 12px; color: var(--vnc-muted); }
         .group { display: flex; align-items: center; gap: 6px; }
-        .group + .group { padding-left: 10px; border-left: 1px solid #1e293b; }
+        .group + .group { padding-left: 10px; border-left: 1px solid var(--vnc-border); }
         /* 危险操作单独靠右、固定宽度，避免和常用按钮一起被等分放大导致误触 */
         .group.tight { flex: 0 0 auto; }
         #bar button.icon { padding: 6px 9px; min-width: 34px; font-size: 14px; line-height: 1; }
-        #bar button, #bar select { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
-        #bar button:hover { background: #334155; }
-        #bar button:disabled { opacity: .5; cursor: default; }
-        #bar button.active { background: #b91c1c; border-color: #dc2626; color: #fee2e2; }
-        #bar button.ghost { background: transparent; color: #94a3b8; border-color: #334155; }
-        #bar button.ghost:hover { background: #1e293b; color: #e2e8f0; }
-        #bar button.on { background: #0369a1; border-color: #0284c7; color: #e0f2fe; }
-        #bar select { padding: 6px 4px; }
+        #bar button, #bar select { background: var(--vnc-btn); color: var(--vnc-fg); border: 1px solid var(--vnc-border); border-radius: var(--vnc-radius); padding: 6px 10px; cursor: pointer; font-size: 12px; transition: background-color 150ms ease, border-color 150ms ease; }
+        #bar button:hover { background: var(--vnc-btn-hover); }
+        #bar button:disabled { opacity: .48; cursor: not-allowed; }
+        #bar button.active { background: var(--vnc-danger); border-color: var(--vnc-danger); color: var(--vnc-danger-fg); }
+        #bar button.ghost { background: transparent; color: var(--vnc-muted); border-color: var(--vnc-border); }
+        #bar button.ghost:hover { background: var(--vnc-btn-hover); color: var(--vnc-fg); }
+        #bar button.on { background: var(--vnc-primary); border-color: var(--vnc-primary-border); color: var(--vnc-on-primary); font-weight: 500; }
+        #bar select { padding: 6px 6px; }
 
         #screen { flex: 1; overflow: hidden; background: #000; touch-action: none; min-height: 0; }
-        #error { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; text-align: center; padding: 24px; color: #fca5a5; font-size: 14px; background: rgba(11,17,32,.94); z-index: 30; cursor: pointer; }
+        #error { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--vnc-danger); font-size: 14px; font-weight: 500; background: var(--vnc-bg); opacity: 0.96; z-index: 30; cursor: pointer; }
 
         /* 虚拟键盘：在文档流底部，不遮挡画面 */
-        #keypad { display: none; flex-direction: column; gap: 6px; padding: 8px; background: #111a2e; border-top: 1px solid #334155; }
+        #keypad { display: none; flex-direction: column; gap: 6px; padding: 8px; background: var(--vnc-bar); border-top: 1px solid var(--vnc-border); }
         #keypad.show { display: flex; }
         .krow { display: flex; gap: 6px; }
-        .krow button { flex: 1 1 0; padding: 10px 4px; background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; font-size: 14px; cursor: pointer; user-select: none; }
-        .krow button:active { background: #0369a1; border-color: #0284c7; }
+        .krow button { flex: 1 1 0; padding: 10px 4px; background: var(--vnc-btn); color: var(--vnc-fg); border: 1px solid var(--vnc-border); border-radius: var(--vnc-radius); font-size: 14px; cursor: pointer; user-select: none; }
+        .krow button:active { background: var(--vnc-primary); border-color: var(--vnc-primary-border); color: var(--vnc-on-primary); }
         .krow button.wide { flex: 1.4 1 0; }
 
-        #paste-box { position: absolute; right: 12px; top: 52px; display: none; width: min(380px, calc(100vw - 24px)); background: #111a2e; border: 1px solid #334155; border-radius: 8px; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); box-sizing: border-box; z-index: 25; }
-        #paste-box h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: #cbd5e1; }
-        #paste-box textarea { width: 100%; height: 84px; resize: vertical; background: #0b1120; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; font: 12px/1.4 ui-monospace, monospace; box-sizing: border-box; }
-        #paste-preview { margin-top: 8px; padding: 6px 8px; background: #0b1120; border: 1px solid #1e293b; border-radius: 6px; font: 12px/1.5 ui-monospace, monospace; color: #93c5fd; word-break: break-all; max-height: 88px; overflow: auto; white-space: pre-wrap; }
-        #paste-meta { margin-top: 6px; font-size: 11px; color: #94a3b8; }
+        #paste-box { position: absolute; right: 12px; top: 52px; display: none; width: min(380px, calc(100vw - 24px)); background: var(--vnc-bar); border: 1px solid var(--vnc-border); border-radius: var(--vnc-radius); padding: 12px; box-shadow: 0 14px 34px rgba(0,0,0,.35); box-sizing: border-box; z-index: 25; }
+        #paste-box h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--vnc-fg); }
+        #paste-box textarea { width: 100%; height: 84px; resize: vertical; background: var(--vnc-bg); color: var(--vnc-fg); border: 1px solid var(--vnc-border); border-radius: var(--vnc-radius); padding: 6px 8px; font: 12px/1.4 var(--vnc-mono); box-sizing: border-box; }
+        #paste-preview { margin-top: 8px; padding: 6px 8px; background: var(--vnc-bg); border: 1px solid var(--vnc-border); border-radius: var(--vnc-radius); font: 12px/1.5 var(--vnc-mono); color: var(--vnc-fg); word-break: break-all; max-height: 88px; overflow: auto; white-space: pre-wrap; }
+        #paste-meta { margin-top: 6px; font-size: 11px; color: var(--vnc-muted); }
         #quick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-        #quick button { background: #1e293b; color: #bae6fd; border: 1px solid #0ea5e9; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
-        #quick button:hover { background: #0c4a6e; }
-        #quick-hint { display: none; margin-bottom: 8px; padding: 6px 8px; border-radius: 6px; background: #422006; border: 1px solid #a16207; color: #fcd34d; font-size: 11px; line-height: 1.5; }
+        #quick button { background: var(--vnc-btn); color: var(--vnc-fg); border: 1px solid var(--vnc-primary-border); border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+        #quick button:hover { background: var(--vnc-primary); color: var(--vnc-on-primary); }
+        #quick-hint { display: none; margin-bottom: 8px; padding: 6px 8px; border-radius: var(--vnc-radius); background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.35); color: var(--vnc-fg); font-size: 11px; line-height: 1.5; }
         #paste-box .row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }
-        #paste-box .row button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
-        #paste-box .row button.primary { background: #0369a1; border-color: #0284c7; }
+        #paste-box .row button { background: var(--vnc-btn); color: var(--vnc-fg); border: 1px solid var(--vnc-border); border-radius: var(--vnc-radius); padding: 6px 10px; cursor: pointer; font-size: 12px; }
+        #paste-box .row button.primary { background: var(--vnc-primary); border-color: var(--vnc-primary-border); color: var(--vnc-on-primary); font-weight: 500; }
 
         /* 手机端：状态独占一行，按钮平分，键盘按钮更大 */
         @media (max-width: 640px) {
@@ -63,6 +114,9 @@
             #paste-box textarea { height: 72px; font-size: 14px; }
             #paste-box .row button { flex: 1 1 auto; padding: 10px 8px; font-size: 13px; }
             #paste-preview { max-height: 64px; font-size: 13px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            * { transition-duration: 0.01ms; }
         }
     </style>
     <script type="module" crossorigin="anonymous">

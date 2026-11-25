@@ -121,3 +121,14 @@ test("theme-system.css defines all semantic layout and component classes", () =>
     assert.ok(css.includes(cls), `missing required semantic class: ${cls}`);
   }
 });
+
+test("theme-system.css places .field and .header-icon-btn inside @layer components and sets header stacking + nowrap", () => {
+  const css = fs.readFileSync("web-dist/assets/theme-system.css", "utf8");
+  const compStart = css.indexOf("@layer components");
+  assert.ok(compStart !== -1, "must wrap base component styles in @layer components so Tailwind utilities like pl-9/w-24/md:hidden win");
+  const compSlice = css.slice(compStart);
+  assert.match(compSlice, /\.field\s*\{/);
+  assert.match(compSlice, /\.header-icon-btn\s*\{/);
+  assert.match(css, /\.shell-header\s*\{[^}]*z-index:\s*30/);
+  assert.match(css, /\.segmented-btn\s*\{[^}]*white-space:\s*nowrap/);
+});
