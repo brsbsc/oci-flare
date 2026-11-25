@@ -1,6 +1,6 @@
 # OCI Helper Serverless
 
-运行在 **Cloudflare Workers + D1 + Durable Objects** 上的 Oracle Cloud (OCI) 多账号实例与任务管理面板，开箱即用、零服务器运维成本。
+运行在 **Cloudflare Workers + D1 + Durable Objects** 上的 Oracle Cloud (OCI) 多账号实例与自动化任务管理面板，开箱即用、零服务器运维成本。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/brsbsc/oci-helper-serverless-cf)
 
@@ -8,56 +8,63 @@
 
 ## 核心特性
 
-### 全新多主题 Web UI
-- **3 套风格主题 × 深/浅双色（共 6 套完整主题）**：支持在顶栏与登录页随时一键切换并持久记忆，首屏零闪烁，自动同步 ECharts 图表与 noVNC 控制台配色：
-  - **精密云控台（Precision，默认）**：克制极简的 1px 层级质感（`1200px` 居中容器）
+### 1. 多主题现代化 Web UI
+- **3 套风格主题 × 深/浅双色（共 6 套完整主题）**：顶栏与登录页随时一键切换并持久记忆，首屏零闪烁，自动同步 **ECharts 图表**与 **noVNC 控制台**配色：
+  - **精密云控台（Precision，默认）**：克制极简的 1px 清晰层级（`1200px` 居中容器）
   - **Bento 工作台（Bento）**：柔和圆角与模块化卡片留白（`1160px` 居中容器）
   - **Ops 运维驾驶舱（Cockpit）**：高密度终端遥测与绿光状态强调（`1280px` 居中容器）
-- **居中 / 宽屏一键切换**：默认居中收窄排版，告别大屏左右空洞；顶栏可随时切回宽屏模式，移动端（`390px` 起）自适应零溢出。
-- **OCI 卡片 / 列表双模式**：`/cfgs` 默认提供结构化卡片视图（含区域、租户、抢机任务、校验时间 2×2 信息格），支持一键切换精简列表视图并记住偏好。
-- **精细化交互与无障碍**：任务实时日志在桌面端改为右侧滑出抽屉；弹窗与确认框支持嵌套 `Escape` 协同与焦点恢复；全局零 `!important` 样式架构并满足 WCAG AA 对比度标准。
+- **居中 / 宽屏一键切换**：默认居中限宽排版，告别宽屏左右空白；顶栏一键切换宽屏模式，移动端（`390px` 起）自适应零横向溢出。
+- **OCI 卡片 / 列表双模式**：`/cfgs` 默认提供结构化卡片视图（含区域、租户、抢机任务、校验时间 2×2 信息格），可随时切换精简列表视图并记住偏好。
+- **精细化交互与无障碍**：任务实时日志在桌面端以右侧滑出抽屉展示；弹窗与确认框支持嵌套 `Escape` 协同与焦点恢复；全局零 `!important` 样式架构并满足 WCAG AA 对比度标准。
 
-### 完整业务能力
+### 2. Telegram 机器人双向交互
+- **零额外服务器**：基于 Cloudflare Workers Webhook 直接运行在同一 Worker 内，Web 面板一键开启/关闭并自动同步 Bot 指令菜单。
+- **随时在手机端运维**：支持 `/status`、`/cfgs`、`/tasks` 等指令与内联键盘，可直接查看状态、账号测活、启停/重启实例、一键换公网 IP，以及暂停/恢复/立即执行抢机与换 IP 任务。
+- **纵深安全防误触**：`X-Telegram-Bot-Api-Secret-Token` 常量时间验签 + 单一 `Chat ID` 精确白名单；关机、重启、换 IP 等高影响操作强制内联按钮二次确认；绝不暴露删除配置、终止实例、删除任务等不可逆操作。
+
+### 3. 完整 OCI 与云运维能力
 - **多账号与租户管理**：智能解析 OCI config / PEM 私钥、一键测活、套餐刷新、批量免费开机、多区域切换与租户概览。
 - **云资源全周期运维**：实例管理（启停/重装/改配/换 IP/noVNC 控制台）、引导卷、VCN/子网/安全组网络、流量监控（ECharts）、配额限额与费用分析。
-- **自动化任务与实时日志**：Cron 定时抢机任务、持续换公网 IP 任务（支持联动更新 DNS），基于 Durable Objects 的 WebSocket 内存实时日志流。
-- **Cloudflare DNS 与安全登录**：内置 Cloudflare 域名解析管理；支持访问密码、TOTP 二次验证、Google OAuth 一键登录以及 Telegram 通知推送。
+- **自动化任务与实时日志**：Cron 定时抢机任务、持续换公网 IP 任务（支持联动更新 Cloudflare DNS），基于 Durable Objects 的 WebSocket 内存实时日志流。
+- **账号安全与认证**：支持访问密码、TOTP 二次验证、Google OAuth 一键登录以及 Telegram 单向通知推送与双向控制。
 - **零手工建库**：首次请求自动执行 `CREATE TABLE IF NOT EXISTS` 初始化表结构，无需手动运行 SQL 迁移。
 
 ---
 
 ## 部署方式
 
-### 方式一：一键按钮部署（最简，自动创建 D1）
+### 方式一：一键按钮部署（最简，自动创建并绑定 D1）
 
-1. 点击顶部 **Deploy to Cloudflare** 按钮并授权 GitHub 与 Cloudflare。
-2. 按向导填写 Worker 名称（默认 `oci-helper-serverless`），Cloudflare 会自动创建并绑定 D1 数据库完成部署。
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/brsbsc/oci-helper-serverless-cf)
+
+1. 点击上方 **Deploy to Cloudflare** 按钮并授权 GitHub 与 Cloudflare。
+2. 按向导填写 Worker 名称（默认 `oci-helper-serverless`），Cloudflare 会自动 Fork 仓库、创建 D1 数据库并完成绑定部署。
 3. 部署完成后按下方 **「部署后必做配置」** 设置 `KEY_SECRET` 与 `AUTH_PASSWORD`，访问 Worker 域名即可登录。
 
-### 方式二：连接 GitHub 仓库自动构建（推荐长期维护）
+### 方式二：连接 GitHub 仓库自动构建（推荐长期维护，永不解绑 D1）
 
-> **重要提示**：Wrangler 每次部署都会以配置文件为准同步资源绑定。如果只用 `wrangler.import.toml`（不声明 D1）部署，**每次推送代码后都会把 Dashboard 里手动添加的 `DB` 绑定清掉**。请按下方推荐配置用加密构建变量注入 `D1_DATABASE_ID`，一劳永逸且不会在公开仓库泄露数据库 ID。
+> **为什么推荐此脚本？** Cloudflare Wrangler 每次部署都会以配置文件为准覆盖远端资源绑定，且不支持 `keep_bindings`。如果直接使用不含 D1 声明的 `wrangler.import.toml`，每次推送代码都会把 Dashboard 里手动绑的 `DB` 清掉。使用仓库内置的 [scripts/cf-deploy.mjs](scripts/cf-deploy.mjs) 配合加密构建变量，既能永久保留 `DB` 绑定，又不会在公开仓库泄露你的数据库 ID。
 
 1. **创建（或复用已有）D1 数据库**：
-   - 进入 Cloudflare Dashboard → **Storage & Databases → D1 SQL Database**，创建数据库并复制它的 **Database ID（UUID）**（若已有历史数据库，直接复制旧库的 ID 即可无缝继承数据）。
+   - 进入 Cloudflare Dashboard → **Storage & Databases → D1 SQL Database**，创建数据库并复制它的 **Database ID（UUID）**（若已有历史数据库，直接复制旧库 ID 即可无缝继承原数据）。
 2. **连接 GitHub 仓库**：
    - 进入 **Workers & Pages → 创建 → 连接 GitHub**，选择本仓库（`brsbsc/oci-helper-serverless-cf`）。
 3. **配置构建变量与命令（Worker → Settings → Build）**：
-   - 在 **Build variables（构建变量）** 中添加（建议勾选 Encrypt 加密）：
-     - `D1_DATABASE_ID` = `<你的 D1 Database ID>`（**必填**，缺失时会直接中止部署，防止误清远端 `DB` 绑定）
-     - `WORKER_NAME` = `<你的 Worker 名称>`（如 `oci-helper-serverless-cf`；若与默认 `oci-helper-serverless` 一致可不填）
-     - `D1_DATABASE_NAME` = `<你的 D1 数据库名称>`（若与默认 `oci-helper-serverless` 一致可不填）
+   - 在 **Build variables（构建变量）** 中添加（建议勾选 **Encrypt** 加密）：
+     - `D1_DATABASE_ID` = `<你的 D1 Database ID>`（**必填**，缺失时会主动中止部署，防止误清远端 `DB` 绑定）
+     - `WORKER_NAME` = `<你的 Worker 名称>`（例如 `oci-helper-serverless-cf`；与默认 `oci-helper-serverless` 一致可不填）
+     - `D1_DATABASE_NAME` = `<你的 D1 数据库名称>`（与默认 `oci-helper-serverless` 一致可不填）
    - **Build command（构建命令）**：留空即可
    - **Deploy command（部署命令）**：
      ```bash
      node scripts/cf-deploy.mjs
      ```
-4. 保存并触发部署，后续每次 `git push` 自动部署都会自动带上真实 `DB` 绑定，不会再解绑。
+4. 保存并触发部署。此后每次 `git push` 自动构建都会自动注入真实 `DB` 绑定，彻底杜绝解绑问题。
 
 <details>
 <summary>备选：使用 wrangler.import.toml 手动绑定（仅适合一次性手动部署）</summary>
 
-若不配置构建变量，可将部署命令设为 `npx wrangler deploy --config wrangler.import.toml`，部署后再到 Worker → **Settings → Bindings** 手动添加 D1 绑定（变量名填 `DB`）。注意此后若再次通过 Git 自动触发该命令，需重新绑定 `DB`。
+若不配置构建变量，可将部署命令设为 `npx wrangler deploy --config wrangler.import.toml`，部署后再到 Worker → **Settings → Bindings** 手动添加 D1 绑定（变量名严格填大写 `DB`）。注意此后若再次通过 Git 触发该命令，需重新手动绑定 `DB`。
 
 </details>
 
@@ -68,7 +75,7 @@ git clone https://github.com/brsbsc/oci-helper-serverless-cf.git
 cd oci-helper-serverless-cf
 npm install -g wrangler
 wrangler login
-wrangler d1 create oci-helper-serverless   # 将返回的 database_id 填入 wrangler.toml（勿提交到公开仓库）
+wrangler d1 create oci-helper-serverless   # 将返回的 database_id 填入本地 wrangler.toml（勿提交到公开仓库）
 wrangler deploy
 ```
 
@@ -83,6 +90,29 @@ wrangler deploy
 | `KEY_SECRET` | **必填** | 随机长字符串，用于 HKDF-SHA256 派生 AES-256-GCM 密钥加密 D1 中的 OCI 私钥、口令、root 密码及系统密钥。未设置时 API 返回 `503`；**切勿随意修改**，否则无法解密已有数据。 |
 | `AUTH_PASSWORD` | 推荐 | 面板登录密码。修改后已签发的所有登录 token 立即失效；若留空，首次启动会在 Worker 日志中输出随机初始密码。 |
 | `AUTH_SECRET` | 推荐 | 另一串独立随机长字符串，专门用于签名登录 token。 |
+
+---
+
+## Telegram 机器人双向交互（可选）
+
+### 启用步骤
+1. 通过 `@BotFather` 创建机器人获取 `Bot Token`，并获取你个人的数字 `Chat ID`。
+2. 登录 Web 面板进入 **系统设置**，在底部密钥卡片中保存 **`Telegram Bot Token`** 与 **`Telegram Chat ID`**（先点「发送 TG 机器人测试消息」确认单向推送通畅）。
+3. 在「Telegram 通知」卡片点击 **开启 TG 交互**（需通过 HTTPS 域名访问面板）：系统会自动生成 64 位加密 Secret Token、向 Telegram 注册 `/api/tg/webhook` 并同步指令菜单；需要停用时点击 **关闭 TG 交互** 即可一键注销并清理密钥。
+
+### 支持指令与内联按钮
+
+| 指令 | 功能说明 | 内联按钮操作 |
+| :--- | :--- | :--- |
+| `/start` / `/status` | 面板总览（OCI 配置有效/失效数、抢机与换 IP 任务数） | 快捷跳转配置、任务、刷新总览 |
+| `/cfgs` | 分页查看 OCI 配置列表与详情 | 账号测活、进入默认主区实例列表 |
+| 实例详情（由 `/cfgs` 进入） | 实时拉取实例状态、规格与公网 IP | 开机（直接执行）；软关机、软重启、一键换公网 IP（**需二次确认**）；刷新实时状态 |
+| `/tasks` | 分页查看抢机任务与换 IP 任务（支持双 Tab 切换） | 抢机任务暂停/恢复/立即执行；换 IP 任务暂停（直接执行）及恢复/立即执行（**需二次确认**） |
+| `/help` | 查看指令说明与操作范围 | 返回主菜单 |
+
+### 安全机制
+- **双因子鉴权**：Webhook 请求强制通过 `X-Telegram-Bot-Api-Secret-Token` 常量时间字节比对（失败返回 `401`），并严格校验单一 `notify.tg_chat_id` 精确白名单（非白名单及 Bot 消息静默丢弃、零回复）。
+- **抗重试与防误触**：收到更新后立即返回 `200 OK` 并交由 `ctx.waitUntil` 异步执行（配合 `update_id` 去重防重试风暴）；高影响操作全部采用两步确认，且明确不开放删除配置、终止实例、删除任务等不可逆接口。
 
 ---
 
@@ -111,30 +141,33 @@ Allow group <你的组> to inspect limits in tenancy
 
 ---
 
-## Telegram 机器人双向交互（可选）
+## 常见问题（FAQ）
 
-1. **一键开启**：先在面板 **系统设置** 底部保存 `Telegram Bot Token` 与 `Telegram Chat ID`，再在「Telegram 通知」卡片点击 **开启 TG 交互**，系统会自动以当前 HTTPS 域名注册 Webhook、生成加密 Secret Token 并同步 Bot 指令菜单；点击 **关闭 TG 交互** 即可注销并清理。
-2. **支持指令与交互面板**：
-   - `/start`、`/help`：查看功能说明与快捷导航
-   - `/status`：查看账号配置、抢机与换 IP 任务总览
-   - `/cfgs`：配置列表翻页、账号测活、实例状态查询与启停/重启/一键换 IP
-   - `/tasks`：抢机与换 IP 任务的暂停/恢复与立即执行
-3. **安全保护**：Webhook 请求强制通过 `X-Telegram-Bot-Api-Secret-Token` 常量时间验签，并严格校验单一 `Chat ID` 精确白名单；关机、重启、换 IP 与恢复换 IP 任务等高影响操作均需内联按钮二次确认；高危操作（删除配置、终止实例、删除任务）不开放给机器人执行。
+- **推送更新后页面显示「还没有 OCI 配置」或提示 `Cannot read properties of undefined (reading 'prepare')`？**
+  - 你的数据安全留在原有 D1 数据库中并未丢失，这只是旧的 `wrangler.import.toml` 部署命令覆盖清空了 Worker 的 `DB` 绑定。请按上文 **方式二** 配置 `D1_DATABASE_ID` 与 `node scripts/cf-deploy.mjs` 重新部署即可彻底恢复并防止复发。
+- **Cloudflare Workers Builds 报错 `The build token selected for this build has been deleted or rolled`？**
+  - 进入 Worker → **Settings → Build** 重新选择或生成新的 Build token，保存后在构建记录页点击 **Retry build** 即可。
+- **忘记面板密码或 TOTP 认证器丢失？**
+  - 在 Worker → **Settings → Variables and Secrets** 修改 `AUTH_PASSWORD` 即可重置密码并令所有旧登录态失效；若 TOTP 丢失，在对应 D1 数据库的 `sys_cfg` 表删除 `key = 'mfa.enabled'` 的记录即可关闭二次验证。
 
 ---
 
 ## 目录结构与本地验证
 
 ```text
-├── dist/              # Cloudflare Worker 后端运行产物（含 Hono API、OCI SDK、Durable Object LogHub）
-├── web-dist/          # 前端静态产物（Vue 3 ESM、多主题 Token 样式系统、ECharts、noVNC）
-├── migrations/        # D1 迁移目录（Worker 首次请求亦会自动建表）
-├── tests/             # Node.js 自动化契约与语法测试套件
-├── wrangler.toml      # 默认 Wrangler 部署配置
-└── wrangler.import.toml
+├── dist/
+│   ├── index.js           # Cloudflare Worker 后端运行产物（Hono API、OCI SDK、Durable Object LogHub）
+│   └── tg-bot.js          # Telegram Bot Webhook、鉴权与内联键盘交互模块
+├── web-dist/              # 前端静态产物（Vue 3 ESM、6 套多主题 Token 系统、ECharts、noVNC）
+├── scripts/
+│   └── cf-deploy.mjs      # 基于加密构建变量注入 D1 绑定的自动部署脚本
+├── migrations/            # D1 迁移目录（Worker 首次请求亦会自动建表）
+├── tests/                 # Node.js 自动化测试套件（主题、部署脚本、TG 机器人及真实 Worker 路由）
+├── wrangler.toml          # 默认 Wrangler 部署配置
+└── wrangler.import.toml   # 无 D1 声明的手动导入配置
 ```
 
-运行本地前端与产物完整性测试（需要 Node.js 20+）：
+运行全量本地自动化测试（需要 Node.js 20+）：
 
 ```bash
 node --test tests/*.test.mjs
@@ -144,4 +177,4 @@ node --test tests/*.test.mjs
 
 ## 隐私与数据存储
 
-所有 OCI 私钥、私钥口令、实例 root 密码及第三方 Token 均使用你自己的 `KEY_SECRET` 经 **HKDF-SHA256 + AES-256-GCM** 加密后保存在你个人 Cloudflare 账号的 D1 数据库中，登录凭证带 `jti` 与密码版本校验，修改密码即刻全端失效。
+所有 OCI 私钥、私钥口令、实例 root 密码、Telegram Bot Token、Webhook Secret 及第三方凭证均使用你自己的 `KEY_SECRET` 经 **HKDF-SHA256 + AES-256-GCM** 加密后保存在你个人 Cloudflare 账号的 D1 数据库中，登录凭证带 `jti` 与密码版本校验，修改密码即刻全端失效。
