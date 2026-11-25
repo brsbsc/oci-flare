@@ -149,6 +149,21 @@ export function parseCallbackData(raw) {
   return { scope: parts[0], action: parts[1], args: parts.slice(2) };
 }
 
+function redactBotToken(msg) {
+  return String(msg ?? "").replace(/\/bot[^/\s]+\//g, "/bot***/");
+}
+
+function backHomeKeyboard(label, callbackData) {
+  return {
+    inline_keyboard: [
+      [
+        { text: label, callback_data: callbackData },
+        { text: "🏠 主菜单", callback_data: "m:home" },
+      ],
+    ],
+  };
+}
+
 /**
  * 调用 Telegram Bot API，默认 10s 超时，并静默忽略 editMessageText 的无变更提示。
  * @param {string} token
@@ -165,15 +180,20 @@ export async function callTelegramApi(
   tgFetch = fetch,
   timeoutMs = DEFAULT_TG_TIMEOUT_MS
 ) {
-  const res = await tgFetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload ?? {}),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let res;
+  try {
+    res = await tgFetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw new Error(redactBotToken(err?.message ?? err));
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.ok === false) {
-    const desc = String(data?.description || "");
+    const desc = redactBotToken(data?.description || "");
     if (method === "editMessageText" && desc.toLowerCase().includes("message is not modified")) {
       return null;
     }
@@ -368,6 +388,15 @@ async function buildOverviewView(app, deps, env, ctx) {
     callInternalApi(app, deps, env, ctx, "/api/tasks?type=launch&page=1&pageSize=100"),
     callInternalApi(app, deps, env, ctx, "/api/ip-tasks?page=1&pageSize=100"),
   ]);
+  const failed = [cfgsRes, launchRes, ipRes].find((r) => !r.ok);
+  if (failed) {
+    return {
+      text: truncateTelegramText(
+        `<b>❌ 获取总览失败</b>\n<code>${escapeHtml(failed.error || "内部接口异常")}</code>`
+      ),
+      reply_markup: backHomeKeyboard("🔄 重试", "m:st"),
+    };
+  }
 
   const cfgs = Array.isArray(cfgsRes.data?.items) ? cfgsRes.data.items : [];
   const cfgTotal = Number(cfgsRes.data?.total ?? cfgs.length);
@@ -406,7 +435,7 @@ async function buildOverviewView(app, deps, env, ctx) {
 
 async function buildConfigListView(app, deps, env, ctx, page = 1) {
   const safeReqPage = Math.max(1, Number(page) || 1);
-  const res = await callInternalApi(
+  let res = await callInternalApi(
     app,
     deps,
     env,
@@ -416,21 +445,24 @@ async function buildConfigListView(app, deps, env, ctx, page = 1) {
   if (!res.ok) {
     return {
       text: truncateTelegramText(`<b>❌ 获取配置列表失败</b>\n<code>${escapeHtml(res.error)}</code>`),
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "🔄 刷新", callback_data: `c:ls:${safeReqPage}` },
-            { text: "🏠 主菜单", callback_data: "m:home" },
-          ],
-        ],
-      },
+      reply_markup: backHomeKeyboard("🔄 刷新", `c:ls:${safeReqPage}`),
     };
   }
 
-  const items = Array.isArray(res.data?.items) ? res.data.items : [];
-  const total = Number(res.data?.total ?? items.length);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const curPage = Math.min(safeReqPage, totalPages);
+  let items = Array.isArray(res.data?.items) ? res.data.items : [];
+  let total = Number(res.data?.total ?? items.length);
+  let totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  let curPage = Math.min(safeReqPage, totalPages);
+  if (items.length === 0 && total > 0 && safeReqPage > totalPages) {
+    const retry = await callInternalApi(app, deps, env, ctx, `/api/cfgs?page=${totalPages}&pageSize=${PAGE_SIZE}`);
+    if (retry.ok) {
+      res = retry;
+      items = Array.isArray(res.data?.items) ? res.data.items : [];
+      total = Number(res.data?.total ?? items.length);
+      totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      curPage = Math.min(totalPages, curPage);
+    }
+  }
 
   const lines = [`<b>☁️ OCI 配置列表</b>（第 ${curPage}/${totalPages} 页 · 共 ${total} 个）`, ""];
   const keyboard = [];
@@ -471,14 +503,7 @@ async function buildConfigDetailView(app, deps, env, ctx, cfgId) {
   if (!res.ok || !res.data?.item) {
     return {
       text: truncateTelegramText(`<b>❌ 获取配置详情失败</b>\n<code>${escapeHtml(res.error || "配置不存在")}</code>`),
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "⬅️ 返回列表", callback_data: "c:ls:1" },
-            { text: "🏠 主菜单", callback_data: "m:home" },
-          ],
-        ],
-      },
+      reply_markup: backHomeKeyboard("⬅️ 返回列表", "c:ls:1"),
     };
   }
 
@@ -684,14 +709,7 @@ async function buildInstanceDetailView(app, deps, env, ctx, cfgId, short8) {
   if (!inst) {
     return {
       text: truncateTelegramText("<b>⚠️ 未找到该实例</b>\n实例可能已终止或配置已移除。"),
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "⬅️ 实例列表", callback_data: `c:ins:${cfgId}:1` },
-            { text: "🏠 主菜单", callback_data: "m:home" },
-          ],
-        ],
-      },
+      reply_markup: backHomeKeyboard("⬅️ 实例列表", `c:ins:${cfgId}:1`),
     };
   }
 
@@ -770,14 +788,7 @@ async function buildInstanceDoView(app, deps, env, ctx, op, cfgId, short8) {
   if (!inst) {
     return {
       text: truncateTelegramText("<b>❌ 操作失败</b>\n未找到对应实例，请返回实例列表刷新。"),
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "⬅️ 实例列表", callback_data: `c:ins:${cfgId}:1` },
-            { text: "🏠 主菜单", callback_data: "m:home" },
-          ],
-        ],
-      },
+      reply_markup: backHomeKeyboard("⬅️ 实例列表", `c:ins:${cfgId}:1`),
     };
   }
 
@@ -832,25 +843,16 @@ async function buildInstanceDoView(app, deps, env, ctx, op, cfgId, short8) {
 
   return {
     text: truncateTelegramText(lines.join("\n")),
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "⬅️ 实例详情", callback_data: `i:v:${cfgId}:${short8}` },
-          { text: "🏠 主菜单", callback_data: "m:home" },
-        ],
-      ],
-    },
+    reply_markup: backHomeKeyboard("⬅️ 实例详情", `i:v:${cfgId}:${short8}`),
   };
 }
 
 async function buildTaskListView(app, deps, env, ctx, kind = "l", page = 1) {
   const k = kind === "p" ? "p" : "l";
   const safeReqPage = Math.max(1, Number(page) || 1);
-  const endpoint =
-    k === "p"
-      ? `/api/ip-tasks?page=${safeReqPage}&pageSize=${PAGE_SIZE}`
-      : `/api/tasks?type=launch&page=${safeReqPage}&pageSize=${PAGE_SIZE}`;
-  const res = await callInternalApi(app, deps, env, ctx, endpoint);
+  const makeEndpoint = (p) =>
+    k === "p" ? `/api/ip-tasks?page=${p}&pageSize=${PAGE_SIZE}` : `/api/tasks?type=launch&page=${p}&pageSize=${PAGE_SIZE}`;
+  let res = await callInternalApi(app, deps, env, ctx, makeEndpoint(safeReqPage));
 
   const tabRow = [
     { text: k === "l" ? "🚀 抢机任务 ✓" : "🚀 抢机任务", callback_data: "t:ls:l:1" },
@@ -872,10 +874,20 @@ async function buildTaskListView(app, deps, env, ctx, kind = "l", page = 1) {
     };
   }
 
-  const items = Array.isArray(res.data?.items) ? res.data.items : [];
-  const total = Number(res.data?.total ?? items.length);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const curPage = Math.min(safeReqPage, totalPages);
+  let items = Array.isArray(res.data?.items) ? res.data.items : [];
+  let total = Number(res.data?.total ?? items.length);
+  let totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  let curPage = Math.min(safeReqPage, totalPages);
+  if (items.length === 0 && total > 0 && safeReqPage > totalPages) {
+    const retry = await callInternalApi(app, deps, env, ctx, makeEndpoint(totalPages));
+    if (retry.ok) {
+      res = retry;
+      items = Array.isArray(res.data?.items) ? res.data.items : [];
+      total = Number(res.data?.total ?? items.length);
+      totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      curPage = Math.min(totalPages, curPage);
+    }
+  }
 
   const title = k === "p" ? "🔄 换 IP 任务" : "🚀 抢机任务";
   const lines = [`<b>${title}</b>（第 ${curPage}/${totalPages} 页 · 共 ${total} 个）`, ""];
@@ -929,14 +941,7 @@ function renderTaskDetailView(kind, taskId, task, banner = "") {
   if (!task) {
     return {
       text: truncateTelegramText("<b>⚠️ 未找到该任务</b>\n任务可能已完成或被删除。"),
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "⬅️ 任务列表", callback_data: `t:ls:${k}:1` },
-            { text: "🏠 主菜单", callback_data: "m:home" },
-          ],
-        ],
-      },
+      reply_markup: backHomeKeyboard("⬅️ 任务列表", `t:ls:${k}:1`),
     };
   }
 
@@ -1010,14 +1015,7 @@ async function buildTaskDetailView(app, deps, env, ctx, kind, taskId, banner = "
   if (!ok) {
     return {
       text: truncateTelegramText(`<b>❌ 获取任务详情失败</b>\n<code>${escapeHtml(error)}</code>`),
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "⬅️ 任务列表", callback_data: `t:ls:${kind === "p" ? "p" : "l"}:1` },
-            { text: "🏠 主菜单", callback_data: "m:home" },
-          ],
-        ],
-      },
+      reply_markup: backHomeKeyboard("⬅️ 任务列表", `t:ls:${kind === "p" ? "p" : "l"}:1`),
     };
   }
   return renderTaskDetailView(kind, taskId, task, banner);
@@ -1030,7 +1028,8 @@ async function buildIpTaskAskView(app, deps, env, ctx, op, taskId, preloadedTask
     const found = await fetchSingleTask(app, deps, env, ctx, "p", taskId);
     task = found.task;
   }
-  const titleName = task?.instanceName || task?.name || taskId;
+  if (!task) return renderTaskDetailView("p", taskId, null);
+  const titleName = task.instanceName || task.name || taskId;
   const actionLabel = op === "res" ? "恢复运行并立即换 IP" : "立即执行一次换 IP";
 
   return {
@@ -1050,6 +1049,85 @@ async function buildIpTaskAskView(app, deps, env, ctx, op, taskId, preloadedTask
         ],
       ],
     },
+  };
+}
+
+async function buildTaskToggleView(app, deps, env, ctx, kind, taskId) {
+  const k = kind === "p" ? "p" : "l";
+  const found = await fetchSingleTask(app, deps, env, ctx, k, taskId);
+  if (!found.ok || !found.task) return renderTaskDetailView(k, taskId, null);
+  if (k === "p") {
+    if (found.task.status !== "running") {
+      return buildIpTaskAskView(app, deps, env, ctx, "res", taskId, found.task);
+    }
+    const patchRes = await callInternalApi(app, deps, env, ctx, `/api/ip-tasks/${encodeURIComponent(taskId)}`, {
+      method: "PATCH",
+      body: { status: "paused" },
+    });
+    const banner =
+      patchRes.ok && patchRes.data?.ok !== false
+        ? "<b>✅ 已暂停换 IP 任务</b>"
+        : `<b>❌ 暂停失败：</b><code>${escapeHtml(patchRes.data?.error || patchRes.error)}</code>`;
+    return buildTaskDetailView(app, deps, env, ctx, "p", taskId, banner);
+  }
+  const nextStatus = found.task.status === "running" ? "paused" : "running";
+  const patchRes = await callInternalApi(app, deps, env, ctx, `/api/tasks/${encodeURIComponent(taskId)}`, {
+    method: "PATCH",
+    body: { status: nextStatus },
+  });
+  const banner =
+    patchRes.ok && patchRes.data?.ok !== false
+      ? `<b>✅ 任务状态已切换为：${nextStatus === "running" ? "运行中" : "已暂停"}</b>`
+      : `<b>❌ 状态更新失败：</b><code>${escapeHtml(patchRes.data?.error || patchRes.error)}</code>`;
+  return buildTaskDetailView(app, deps, env, ctx, "l", taskId, banner);
+}
+
+async function buildLaunchTaskRunView(app, deps, env, ctx, taskId) {
+  const res = await callInternalApi(app, deps, env, ctx, `/api/tasks/${encodeURIComponent(taskId)}/run`, {
+    method: "POST",
+  });
+  const bizOk = res.ok && res.data?.ok !== false;
+  const lines = bizOk
+    ? ["<b>⚡ 抢机任务已执行</b>", "", `结果：${escapeHtml(res.data?.message || "执行完成")}`]
+    : [
+        "<b>❌ 抢机任务执行失败</b>",
+        "",
+        `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
+      ];
+  return {
+    text: truncateTelegramText(lines.join("\n")),
+    reply_markup: backHomeKeyboard("⬅️ 任务详情", `t:v:l:${taskId}`),
+  };
+}
+
+async function buildIpTaskDoView(app, deps, env, ctx, op, taskId) {
+  const res =
+    op === "run"
+      ? await callInternalApi(app, deps, env, ctx, `/api/ip-tasks/${encodeURIComponent(taskId)}/run`, {
+          method: "POST",
+        })
+      : await callInternalApi(app, deps, env, ctx, `/api/ip-tasks/${encodeURIComponent(taskId)}`, {
+          method: "PATCH",
+          body: { status: "running" },
+        });
+  const bizOk = res.ok && res.data?.ok !== false;
+  const lines = bizOk
+    ? op === "run"
+      ? [
+          "<b>✅ 换 IP 任务执行完成</b>",
+          "",
+          ...(res.data?.ip ? [`新公网 IP：<code>${escapeHtml(res.data.ip)}</code>`] : []),
+          ...(res.data?.message ? [`信息：${escapeHtml(res.data.message)}`] : []),
+        ]
+      : ["<b>✅ 换 IP 任务已恢复运行</b>", "", "系统已触发后台换 IP 调度。"]
+    : [
+        op === "run" ? "<b>❌ 换 IP 任务执行失败</b>" : "<b>❌ 换 IP 任务操作失败</b>",
+        "",
+        `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
+      ];
+  return {
+    text: truncateTelegramText(lines.join("\n")),
+    reply_markup: backHomeKeyboard("⬅️ 任务详情", `t:v:p:${taskId}`),
   };
 }
 
@@ -1193,92 +1271,14 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
       return;
     }
     if (action === "tog" && args[0] && args[1]) {
-      const kind = args[0] === "p" ? "p" : "l";
-      const taskId = args[1];
-      const found = await fetchSingleTask(app, deps, env, ctx, kind, taskId);
-      if (!found.ok || !found.task) {
-        const view = renderTaskDetailView(kind, taskId, null);
-        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-        return;
-      }
-      if (kind === "p") {
-        if (found.task.status !== "running") {
-          const confirmView = await buildIpTaskAskView(app, deps, env, ctx, "res", taskId, found.task);
-          if (confirmView) await editOrSendHtml(botToken, chatId, messageId, confirmView, tgFetch);
-          return;
-        }
-        const patchRes = await callInternalApi(
-          app,
-          deps,
-          env,
-          ctx,
-          `/api/ip-tasks/${encodeURIComponent(taskId)}`,
-          { method: "PATCH", body: { status: "paused" } }
-        );
-        const banner = patchRes.ok
-          ? "<b>✅ 已暂停换 IP 任务</b>"
-          : `<b>❌ 暂停失败：</b><code>${escapeHtml(patchRes.error)}</code>`;
-        const view = await buildTaskDetailView(app, deps, env, ctx, "p", taskId, banner);
-        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-        return;
-      }
-
-      const nextStatus = found.task.status === "running" ? "paused" : "running";
-      const patchRes = await callInternalApi(
-        app,
-        deps,
-        env,
-        ctx,
-        `/api/tasks/${encodeURIComponent(taskId)}`,
-        { method: "PATCH", body: { status: nextStatus } }
-      );
-      const banner = patchRes.ok
-        ? `<b>✅ 任务状态已切换为：${nextStatus === "running" ? "运行中" : "已暂停"}</b>`
-        : `<b>❌ 状态更新失败：</b><code>${escapeHtml(patchRes.error)}</code>`;
-      const view = await buildTaskDetailView(app, deps, env, ctx, "l", taskId, banner);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+      const view = await buildTaskToggleView(app, deps, env, ctx, args[0], args[1]);
+      if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
       return;
     }
     if (action === "run" && args[0] === "l" && args[1]) {
-      const taskId = args[1];
       await showLoading(botToken, chatId, messageId, "正在立即执行抢机任务，请稍候…", tgFetch);
-      const res = await callInternalApi(
-        app,
-        deps,
-        env,
-        ctx,
-        `/api/tasks/${encodeURIComponent(taskId)}/run`,
-        { method: "POST" }
-      );
-      const bizOk = res.ok && res.data?.ok !== false;
-      const lines = bizOk
-        ? [
-            "<b>⚡ 抢机任务已执行</b>",
-            "",
-            `结果：${escapeHtml(res.data?.message || "执行完成")}`,
-          ]
-        : [
-            "<b>❌ 抢机任务执行失败</b>",
-            "",
-            `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
-          ];
-      await editOrSendHtml(
-        botToken,
-        chatId,
-        messageId,
-        {
-          text: truncateTelegramText(lines.join("\n")),
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "⬅️ 任务详情", callback_data: `t:v:l:${taskId}` },
-                { text: "🏠 主菜单", callback_data: "m:home" },
-              ],
-            ],
-          },
-        },
-        tgFetch
-      );
+      const view = await buildLaunchTaskRunView(app, deps, env, ctx, args[1]);
+      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
       return;
     }
     if (action === "ask" && args[0] && args[1]) {
@@ -1286,52 +1286,10 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
       if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
       return;
     }
-    if (action === "do" && args[0] && args[1]) {
-      const op = args[0];
-      const taskId = args[1];
-      if (op !== "run" && op !== "res") return;
+    if (action === "do" && (args[0] === "run" || args[0] === "res") && args[1]) {
       await showLoading(botToken, chatId, messageId, "正在执行换 IP 任务，请稍候…", tgFetch);
-      const res =
-        op === "run"
-          ? await callInternalApi(app, deps, env, ctx, `/api/ip-tasks/${encodeURIComponent(taskId)}/run`, {
-              method: "POST",
-            })
-          : await callInternalApi(app, deps, env, ctx, `/api/ip-tasks/${encodeURIComponent(taskId)}`, {
-              method: "PATCH",
-              body: { status: "running" },
-            });
-      const bizOk = res.ok && res.data?.ok !== false;
-      const lines = bizOk
-        ? op === "run"
-          ? [
-              "<b>✅ 换 IP 任务执行完成</b>",
-              "",
-              ...(res.data?.ip ? [`新公网 IP：<code>${escapeHtml(res.data.ip)}</code>`] : []),
-              ...(res.data?.message ? [`信息：${escapeHtml(res.data.message)}`] : []),
-            ]
-          : ["<b>✅ 换 IP 任务已恢复运行</b>", "", "系统已触发后台换 IP 调度。"]
-        : [
-            op === "run" ? "<b>❌ 换 IP 任务执行失败</b>" : "<b>❌ 换 IP 任务操作失败</b>",
-            "",
-            `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
-          ];
-      await editOrSendHtml(
-        botToken,
-        chatId,
-        messageId,
-        {
-          text: truncateTelegramText(lines.join("\n")),
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "⬅️ 任务详情", callback_data: `t:v:p:${taskId}` },
-                { text: "🏠 主菜单", callback_data: "m:home" },
-              ],
-            ],
-          },
-        },
-        tgFetch
-      );
+      const view = await buildIpTaskDoView(app, deps, env, ctx, args[0], args[1]);
+      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
     }
   }
 }
@@ -1344,8 +1302,17 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
  * @param {any} app
  * @param {object} deps
  * @param {typeof fetch} [tgFetch=fetch]
+ * @param {string | null} [precheckedChatId=null]
  */
-export async function handleTelegramUpdate(update, env, ctx, app, deps, tgFetch = fetch) {
+export async function handleTelegramUpdate(
+  update,
+  env,
+  ctx,
+  app,
+  deps,
+  tgFetch = fetch,
+  precheckedChatId = null
+) {
   if (!update || typeof update !== "object") return;
   const { msg, cq, chatId: incomingChatId, isBot } = extractUpdateSender(update);
   if (isBot || !incomingChatId) return;
@@ -1353,7 +1320,10 @@ export async function handleTelegramUpdate(update, env, ctx, app, deps, tgFetch 
   const botToken = String((await deps.sysGet(env, "notify.tg_bot_token")) || "").trim();
   if (!botToken) return;
 
-  const allowedChatId = String((await deps.sysGet(env, "notify.tg_chat_id")) || "").trim();
+  const allowedChatId =
+    precheckedChatId !== null && precheckedChatId !== undefined
+      ? String(precheckedChatId).trim()
+      : String((await deps.sysGet(env, "notify.tg_chat_id")) || "").trim();
   if (!allowedChatId || incomingChatId !== allowedChatId) return;
 
   if (cq) {
@@ -1434,9 +1404,9 @@ export function registerTgBot(app, deps, tgFetch = fetch) {
 
     const execCtx = readExecutionCtx(c);
     const work = Promise.resolve()
-      .then(() => handleTelegramUpdate(update, c.env, execCtx, app, deps, tgFetch))
+      .then(() => handleTelegramUpdate(update, c.env, execCtx, app, deps, tgFetch, allowedChatId))
       .catch((err) => {
-        console.error("[tg-bot] webhook dispatch failed:", err?.message ?? err);
+        console.error("[tg-bot] webhook dispatch failed:", redactBotToken(err?.message ?? err));
       });
 
     if (execCtx && typeof execCtx.waitUntil === "function") {
@@ -1540,7 +1510,11 @@ export function registerTgBot(app, deps, tgFetch = fetch) {
       );
       await deps.sysSet(c.env, "tg.webhook_secret", secret);
       await deps.sysSet(c.env, "tg.webhook_url", webhookUrl);
-      await callTelegramApi(botToken, "setMyCommands", { commands: BOT_COMMANDS }, tgFetch);
+      try {
+        await callTelegramApi(botToken, "setMyCommands", { commands: BOT_COMMANDS }, tgFetch);
+      } catch (cmdErr) {
+        console.warn("[tg-bot] setMyCommands failed:", redactBotToken(cmdErr?.message ?? cmdErr));
+      }
 
       return c.json({
         ok: true,
@@ -1551,7 +1525,7 @@ export function registerTgBot(app, deps, tgFetch = fetch) {
         hasChatId: true,
       });
     } catch (e) {
-      return c.json({ error: e?.message ?? String(e) }, 400);
+      return c.json({ error: redactBotToken(e?.message ?? String(e)) }, 400);
     }
   });
 

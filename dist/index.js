@@ -205423,8 +205423,7 @@ registerTgBot(app, {
   sysSet,
   authSecret,
   authVersion,
-  issueToken,
-  nowIso: nowIso2
+  issueToken
 });
 app.notFound((c) => Response.json({ error: "\u63A5\u53E3\u4E0D\u5B58\u5728" }, { status: 404 }));
 app.onError((err, c) => {

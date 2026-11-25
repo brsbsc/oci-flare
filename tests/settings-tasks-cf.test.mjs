@@ -48,6 +48,7 @@ test("SettingsView supports one-click Telegram Webhook toggle and status display
   assert.match(src, /关闭 TG 交互/);
   assert.match(src, /lastError/);
   assert.match(src, /最近投递异常/);
+  assert.match(src, /break-all font-mono text-slate-200/);
   assert.doesNotMatch(src, /webhook_secret/);
 });
 

@@ -371,6 +371,9 @@ test("POST /api/tg/webhook silently drops unauthorized chat_id or is_bot=true wi
 
 test("POST /api/tg/webhook uses ctx.waitUntil, sends /start and /help replies, and deduplicates update_id", async () => {
   const app = createMockRouter();
+  app.get("/api/cfgs", (c) => c.json({ items: [], total: 0 }));
+  app.get("/api/tasks", (c) => c.json({ items: [], total: 0 }));
+  app.get("/api/ip-tasks", (c) => c.json({ items: [], total: 0 }));
   const secret = "c".repeat(64);
   const deps = createMockDeps({
     "tg.webhook_secret": secret,
@@ -696,6 +699,9 @@ test("DELETE /api/tg/webhook-config calls deleteWebhook and still clears local k
 
 test("handleTelegramUpdate is directly testable for /start and /help", async () => {
   const app = createMockRouter();
+  app.get("/api/cfgs", (c) => c.json({ items: [], total: 0 }));
+  app.get("/api/tasks", (c) => c.json({ items: [], total: 0 }));
+  app.get("/api/ip-tasks", (c) => c.json({ items: [], total: 0 }));
   const deps = createMockDeps({
     "notify.tg_bot_token": "123:ABC",
     "notify.tg_chat_id": "10001",
@@ -1763,7 +1769,7 @@ test("dist/index.js hooks registerTgBot, SYS_DEFS hidden keys, PUBLIC_API_PATHS,
   assert.ok(notFoundIdx !== -1 && registerIdx < notFoundIdx, "registerTgBot must be registered before app.notFound");
 
   const registerSnippet = src.slice(registerIdx, notFoundIdx);
-  for (const depName of ["sysGet", "sysSet", "authSecret", "authVersion", "issueToken", "nowIso: nowIso2"]) {
+  for (const depName of ["sysGet", "sysSet", "authSecret", "authVersion", "issueToken"]) {
     assert.ok(registerSnippet.includes(depName), `registerTgBot deps should include ${depName}`);
   }
 
@@ -2149,4 +2155,185 @@ test("Instance detail i:v refreshes stale tg.imap cache from live OCI and i:do:i
   assert.ok(afterIpEdit);
   assert.match(afterIpEdit.body.text, /3\.3\.3\.3/);
   assert.equal(afterIpEdit.body.text.includes("1.1.1.1"), false);
+});
+
+test("review fixes: redact bot token on network error, overview error reporting, non-fatal setMyCommands, pagination clamp refetch, deleted IP ask guard, and single chat_id read", async () => {
+  // #1 Redact bot token in network error thrown by tgFetch
+  await assert.rejects(
+    () =>
+      callTelegramApi(
+        "999999:SUPER_SECRET_BOT_TOKEN",
+        "setWebhook",
+        {},
+        async () => {
+          throw new Error("DNS lookup failed for https://api.telegram.org/bot999999:SUPER_SECRET_BOT_TOKEN/setWebhook");
+        }
+      ),
+    (err) => {
+      assert.match(err.message, /\/bot\*\*\*\//);
+      assert.equal(err.message.includes("SUPER_SECRET_BOT_TOKEN"), false);
+      return true;
+    }
+  );
+
+  // #2 /status shows error instead of fake zeros when an internal API fails (503)
+  {
+    const app = createMockRouter();
+    app.get("/api/cfgs", (c) => c.json({ error: "服务端未配置 KEY_SECRET" }, 503));
+    app.get("/api/tasks", (c) => c.json({ items: [], total: 0 }));
+    app.get("/api/ip-tasks", (c) => c.json({ items: [], total: 0 }));
+    const deps = createMockDeps({ "notify.tg_bot_token": "tk", "notify.tg_chat_id": "10001" });
+    const sent = [];
+    const tgFetch = async (url, init) => {
+      sent.push({ url, body: JSON.parse(init.body) });
+      return Response.json({ ok: true, result: { message_id: 1 } });
+    };
+    await handleTelegramUpdate(
+      { update_id: 901, message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/status" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].body.text, /❌ 获取总览失败/);
+    assert.match(sent[0].body.text, /KEY_SECRET/);
+    assert.doesNotMatch(sent[0].body.text, /OCI 配置：0 个/);
+  }
+
+  // #3 POST /api/tg/webhook-config stays 200 enabled when setWebhook succeeds but setMyCommands fails
+  {
+    const app = createMockRouter();
+    const deps = createMockDeps({ "notify.tg_bot_token": "tk", "notify.tg_chat_id": "10001" });
+    const tgFetch = async (url) => {
+      if (url.endsWith("/setMyCommands")) throw new Error("Telegram 502 Bad Gateway");
+      return Response.json({ ok: true, result: true });
+    };
+    registerTgBot(app, deps, tgFetch);
+    const res = await app.fetch(
+      new Request("https://panel.example.com/api/tg/webhook-config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ origin: "https://panel.example.com" }),
+      }),
+      {}
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.enabled, true);
+  }
+
+  // #4 Pagination auto-refetches last valid page when requested page is empty after deletions
+  {
+    const app = createMockRouter();
+    const seenPages = [];
+    app.get("/api/cfgs", (c) => {
+      const p = Number(c.req.query("page") || 1);
+      seenPages.push(`cfg:${p}`);
+      return c.json(
+        p === 1
+          ? { items: [{ id: "cfg_1", name: "SG", region: "ap-singapore-1", status: "active", taskCount: 0, runningTaskCount: 0 }], total: 1 }
+          : { items: [], total: 1 }
+      );
+    });
+    app.get("/api/tasks", (c) => {
+      const p = Number(c.req.query("page") || 1);
+      seenPages.push(`tsk:${p}`);
+      return c.json(
+        p === 1
+          ? { items: [{ id: "task_1", name: "ARM", status: "running", successCount: 0, targetCount: 1, attemptCount: 2 }], total: 1 }
+          : { items: [], total: 1 }
+      );
+    });
+    const deps = createMockDeps({ "notify.tg_bot_token": "tk", "notify.tg_chat_id": "10001" });
+    const edits = [];
+    const tgFetch = async (url, init) => {
+      if (url.endsWith("/editMessageText")) edits.push(JSON.parse(init.body));
+      return Response.json({ ok: true, result: true });
+    };
+    await handleTelegramUpdate(
+      { update_id: 902, callback_query: { id: "q1", from: { is_bot: false }, message: { chat: { id: 10001 }, message_id: 5 }, data: "c:ls:2" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    await handleTelegramUpdate(
+      { update_id: 903, callback_query: { id: "q2", from: { is_bot: false }, message: { chat: { id: 10001 }, message_id: 5 }, data: "t:ls:l:2" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.deepEqual(seenPages, ["cfg:2", "cfg:1", "tsk:2", "tsk:1"]);
+    assert.match(edits[0].text, /SG/);
+    assert.match(edits[1].text, /ARM/);
+  }
+
+  // #5 Deleted IP task ask view renders not-found directly without dead confirm button
+  {
+    const app = createMockRouter();
+    app.get("/api/ip-tasks", (c) => c.json({ items: [], total: 0 }));
+    const deps = createMockDeps({ "notify.tg_bot_token": "tk", "notify.tg_chat_id": "10001" });
+    const edits = [];
+    const tgFetch = async (url, init) => {
+      if (url.endsWith("/editMessageText")) edits.push(JSON.parse(init.body));
+      return Response.json({ ok: true, result: true });
+    };
+    await handleTelegramUpdate(
+      { update_id: 904, callback_query: { id: "q3", from: { is_bot: false }, message: { chat: { id: 10001 }, message_id: 6 }, data: "t:ask:run:ipt_gone" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].text, /未找到该任务/);
+    const callbacks = edits[0].reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+    assert.equal(callbacks.some((cb) => cb.startsWith("t:do:")), false);
+  }
+
+  // #8 POST /api/tg/webhook queries notify.tg_chat_id only once per update
+  {
+    const app = createMockRouter();
+    const baseDeps = createMockDeps({
+      "notify.tg_bot_token": "tk",
+      "notify.tg_chat_id": "10001",
+      "tg.webhook_secret": "sec-abc-123",
+    });
+    let chatIdReads = 0;
+    const deps = {
+      ...baseDeps,
+      async sysGet(env, key) {
+        if (key === "notify.tg_chat_id") chatIdReads++;
+        return baseDeps.sysGet(env, key);
+      },
+    };
+    const tgFetch = async () => Response.json({ ok: true, result: { message_id: 1 } });
+    registerTgBot(app, deps, tgFetch);
+    const pending = [];
+    const res = await app.fetch(
+      new Request("https://panel.example.com/api/tg/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Telegram-Bot-Api-Secret-Token": "sec-abc-123",
+        },
+        body: JSON.stringify({
+          update_id: 905,
+          message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/help" },
+        }),
+      }),
+      {},
+      { waitUntil(p) { pending.push(p); } }
+    );
+    assert.equal(res.status, 200);
+    await Promise.all(pending);
+    assert.equal(chatIdReads, 1);
+  }
 });

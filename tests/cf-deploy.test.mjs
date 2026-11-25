@@ -51,3 +51,8 @@ test("maskId hides full UUID while preserving short diagnostic prefix", () => {
   assert.equal(maskId("12345678-1234-4123-8123-123456789abc"), "12345678***");
   assert.equal(maskId("short"), "***");
 });
+
+test("cf-deploy.mjs passes relative .wrangler-deploy.toml to --config to stay safe on paths with spaces", () => {
+  const src = fs.readFileSync("scripts/cf-deploy.mjs", "utf8");
+  assert.match(src, /"--config",\s*"\.wrangler-deploy\.toml"/);
+});

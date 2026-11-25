@@ -70,7 +70,7 @@ function runCli() {
   fs.writeFileSync(tempPath, rendered, "utf8");
   try {
     const extraArgs = process.argv.slice(2);
-    const args = ["wrangler", "deploy", "--config", tempPath, ...extraArgs];
+    const args = ["wrangler", "deploy", "--config", ".wrangler-deploy.toml", ...extraArgs];
     const isWin = process.platform === "win32";
     const result = spawnSync(isWin ? "npx.cmd" : "npx", args, {
       cwd: rootDir,
