@@ -1929,3 +1929,224 @@ test("Real Worker dist/index.js Hono routing: /api/tg/webhook public auth, /api/
   assert.equal(db.rows.has("tg.imap:old_cfg"), false);
   assert.equal(db.rows.has("tg.imap:fresh_cfg"), true);
 });
+
+test("HTTP 200 { ok: false } business failures on t:do:run and t:run:l render failure messages instead of success", async () => {
+  const app = createMockRouter();
+  app.post("/api/ip-tasks/:tid/run", async (c) =>
+    c.json({ ok: false, message: "任务不存在" }, 200)
+  );
+  app.post("/api/tasks/:id/run", async (c) =>
+    c.json({ ok: false, message: "配额超限" }, 200)
+  );
+
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  // 1. t:do:run:<id> with HTTP 200 { ok: false, message: "任务不存在" }
+  await handleTelegramUpdate(
+    {
+      update_id: 201,
+      callback_query: {
+        id: "cq-ip-biz-fail",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 101 },
+        data: "t:do:run:ipt_missing",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const ipEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.ok(ipEdit);
+  assert.match(ipEdit.body.text, /❌/);
+  assert.match(ipEdit.body.text, /任务不存在/);
+  assert.equal(ipEdit.body.text.includes("✅ 换 IP 任务执行完成"), false);
+
+  // 2. t:run:l:<id> with HTTP 200 { ok: false, message: "配额超限" }
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 202,
+      callback_query: {
+        id: "cq-launch-biz-fail",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 102 },
+        data: "t:run:l:task_over_quota",
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const launchEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.ok(launchEdit);
+  assert.match(launchEdit.body.text, /❌/);
+  assert.match(launchEdit.body.text, /配额超限/);
+  assert.equal(launchEdit.body.text.includes("⚡ 抢机任务已执行"), false);
+});
+
+test("Instance detail i:v refreshes stale tg.imap cache from live OCI and i:do:ip invalidates stale cache", async () => {
+  const OCID =
+    "ocid1.instance.oc1.ap-singapore-1.anuwgljr76q54nyczzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz9";
+  const cfgId = "cfg_LiveRefresh";
+  const short8 = await shortInstanceId(OCID);
+
+  let liveState = "RUNNING";
+  let liveIp = "2.2.2.2";
+
+  const app = createMockRouter();
+  app.get("/api/cfgs/:id/instances", async (c) =>
+    c.json({
+      region: "ap-singapore-1",
+      items: [
+        {
+          id: OCID,
+          displayName: "live-arm-01",
+          lifecycleState: liveState,
+          shape: "VM.Standard.A1.Flex",
+          ocpus: 4,
+          memoryInGBs: 24,
+          publicIps: [liveIp],
+        },
+      ],
+    })
+  );
+  // Real dist/index.js shape: returns { item } with state + vnics[].publicIp
+  app.get("/api/cfgs/:id/instances/:iid", async (c) =>
+    c.json({
+      item: {
+        id: c.req.param("iid"),
+        displayName: "live-arm-01",
+        state: liveState,
+        shape: "VM.Standard.A1.Flex",
+        ocpus: 4,
+        memoryInGBs: 24,
+        region: "ap-singapore-1",
+        vnics: [{ publicIp: liveIp }],
+      },
+    })
+  );
+  app.post("/api/cfgs/:id/instances/:iid/change-ip", async (c) => {
+    liveIp = "3.3.3.3";
+    return c.json({ ok: true, ip: "3.3.3.3" });
+  });
+
+  const deps = createMockDeps({
+    "notify.tg_bot_token": "123:SECRET_TOKEN",
+    "notify.tg_chat_id": "10001",
+    [`tg.imap:${cfgId}`]: JSON.stringify({
+      ts: 1700000000000,
+      map: {
+        [short8]: {
+          id: OCID,
+          name: "live-arm-01",
+          state: "STOPPED",
+          shape: "VM.Standard.A1.Flex",
+          ocpus: 4,
+          memoryGb: 24,
+          publicIps: ["1.1.1.1"],
+          region: "ap-singapore-1",
+        },
+      },
+    }),
+  });
+  const { calls, tgFetch } = createTgSpy();
+
+  // 1. i:v with stale tg.imap (STOPPED, 1.1.1.1) -> fetches live RUNNING & 2.2.2.2 and updates tg.imap
+  await handleTelegramUpdate(
+    {
+      update_id: 210,
+      callback_query: {
+        id: "cq-iv-refresh",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 110 },
+        data: `i:v:${cfgId}:${short8}`,
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const refreshEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.ok(refreshEdit);
+  assert.match(refreshEdit.body.text, /RUNNING/);
+  assert.match(refreshEdit.body.text, /2\.2\.2\.2/);
+  assert.equal(refreshEdit.body.text.includes("STOPPED"), false);
+  assert.equal(refreshEdit.body.text.includes("1.1.1.1"), false);
+
+  const updatedMap = JSON.parse(await deps.sysGet({}, `tg.imap:${cfgId}`));
+  assert.equal(updatedMap.map[short8].state, "RUNNING");
+  assert.deepEqual(updatedMap.map[short8].publicIps, ["2.2.2.2"]);
+
+  // 2. Seed stale cache 1.1.1.1 again, run i:do:ip -> succeeds with 3.3.3.3, then click i:v -> must show 3.3.3.3!
+  await deps.sysSet(
+    {},
+    `tg.imap:${cfgId}`,
+    JSON.stringify({
+      ts: 1700000000000,
+      map: {
+        [short8]: {
+          id: OCID,
+          name: "live-arm-01",
+          state: "RUNNING",
+          shape: "VM.Standard.A1.Flex",
+          ocpus: 4,
+          memoryGb: 24,
+          publicIps: ["1.1.1.1"],
+          region: "ap-singapore-1",
+        },
+      },
+    })
+  );
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 211,
+      callback_query: {
+        id: "cq-do-ip-live",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 110 },
+        data: `i:do:ip:${cfgId}:${short8}`,
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const doIpEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.match(doIpEdit.body.text, /3\.3\.3\.3/);
+
+  calls.length = 0;
+  await handleTelegramUpdate(
+    {
+      update_id: 212,
+      callback_query: {
+        id: "cq-iv-after-ip",
+        from: { is_bot: false },
+        message: { chat: { id: 10001 }, message_id: 110 },
+        data: `i:v:${cfgId}:${short8}`,
+      },
+    },
+    {},
+    null,
+    app,
+    deps,
+    tgFetch
+  );
+  const afterIpEdit = calls.filter((c) => c.method === "editMessageText").pop();
+  assert.ok(afterIpEdit);
+  assert.match(afterIpEdit.body.text, /3\.3\.3\.3/);
+  assert.equal(afterIpEdit.body.text.includes("1.1.1.1"), false);
+});

@@ -258,12 +258,18 @@ function taskStatusBadge(status) {
 }
 
 function normalizeInstanceEntry(inst, fallbackRegion) {
+  let publicIps = [];
+  if (Array.isArray(inst?.publicIps)) {
+    publicIps = inst.publicIps.map(String).filter(Boolean);
+  } else if (Array.isArray(inst?.vnics)) {
+    publicIps = inst.vnics.map((v) => v?.publicIp).filter(Boolean).map(String);
+  }
   const entry = {
     id: String(inst?.id ?? ""),
     name: String(inst?.displayName ?? inst?.name ?? inst?.id ?? ""),
     state: String(inst?.lifecycleState ?? inst?.state ?? "UNKNOWN"),
     shape: String(inst?.shape ?? ""),
-    publicIps: Array.isArray(inst?.publicIps) ? inst.publicIps.map(String) : [],
+    publicIps,
     region: String(inst?.region ?? fallbackRegion ?? ""),
   };
   if (inst?.ocpus !== undefined && inst?.ocpus !== null) {
@@ -287,17 +293,7 @@ async function buildAndSaveInstanceMap(deps, env, cfgId, items, fallbackRegion) 
   return map;
 }
 
-/**
- * 通过 8 位实例短 ID 解析完整 OCID 与摘要信息，缓存未命中时自动回源拉取并刷新 tg.imap:<cfgId>。
- * @param {any} app
- * @param {object} deps
- * @param {any} env
- * @param {any} ctx
- * @param {string} cfgId
- * @param {string} short8
- * @returns {Promise<{ id: string, name: string, state: string, shape: string, publicIps: string[], region: string, ocpus?: number, memoryGb?: number } | null>}
- */
-export async function resolveInstanceByShortId(app, deps, env, ctx, cfgId, short8) {
+async function resolveInstanceEntry(app, deps, env, ctx, cfgId, short8) {
   if (!cfgId || !short8) return null;
   const raw = await deps.sysGet(env, imapKey(cfgId));
   if (raw) {
@@ -305,7 +301,11 @@ export async function resolveInstanceByShortId(app, deps, env, ctx, cfgId, short
       const parsed = JSON.parse(raw);
       const hit = parsed?.map?.[short8];
       if (hit?.id) {
-        return normalizeInstanceEntry(hit, hit.region);
+        return {
+          entry: normalizeInstanceEntry(hit, hit.region),
+          fromCache: true,
+          map: parsed.map,
+        };
       }
     } catch {
       // 缓存损坏时回源重建
@@ -323,7 +323,22 @@ export async function resolveInstanceByShortId(app, deps, env, ctx, cfgId, short
   const items = Array.isArray(res.data?.items) ? res.data.items : [];
   const fallbackRegion = String(res.data?.region || "");
   const map = await buildAndSaveInstanceMap(deps, env, cfgId, items, fallbackRegion);
-  return map[short8]?.id ? map[short8] : null;
+  return map[short8]?.id ? { entry: map[short8], fromCache: false, map } : null;
+}
+
+/**
+ * 通过 8 位实例短 ID 解析完整 OCID 与摘要信息，缓存未命中时自动回源拉取并刷新 tg.imap:<cfgId>。
+ * @param {any} app
+ * @param {object} deps
+ * @param {any} env
+ * @param {any} ctx
+ * @param {string} cfgId
+ * @param {string} short8
+ * @returns {Promise<{ id: string, name: string, state: string, shape: string, publicIps: string[], region: string, ocpus?: number, memoryGb?: number } | null>}
+ */
+export async function resolveInstanceByShortId(app, deps, env, ctx, cfgId, short8) {
+  const resolved = await resolveInstanceEntry(app, deps, env, ctx, cfgId, short8);
+  return resolved?.entry ?? null;
 }
 
 function buildHelpMessage() {
@@ -613,8 +628,59 @@ async function buildInstanceListView(app, deps, env, ctx, cfgId, page = 1) {
   };
 }
 
+async function refreshLiveInstanceEntry(app, deps, env, ctx, cfgId, short8, resolved) {
+  let inst = resolved.entry;
+  if (!resolved.fromCache) return inst;
+
+  const detailRes = await callInternalApi(
+    app,
+    deps,
+    env,
+    ctx,
+    `/api/cfgs/${encodeURIComponent(cfgId)}/instances/${encodeURIComponent(inst.id)}`
+  );
+  const rawItem = detailRes.data?.item ?? detailRes.data?.instance ?? (detailRes.data?.id ? detailRes.data : null);
+  if (detailRes.ok && rawItem) {
+    const live = normalizeInstanceEntry(rawItem, inst.region);
+    const merged = {
+      ...inst,
+      ...live,
+      id: live.id || inst.id,
+      name: rawItem?.displayName || rawItem?.name ? live.name : inst.name,
+      state: rawItem?.lifecycleState || rawItem?.state ? live.state : inst.state,
+      shape: rawItem?.shape ? live.shape : inst.shape,
+      region: rawItem?.region ? live.region : inst.region,
+      publicIps:
+        Array.isArray(rawItem?.publicIps) || Array.isArray(rawItem?.vnics)
+          ? live.publicIps
+          : inst.publicIps,
+    };
+    const nextMap = { ...(resolved.map || {}), [short8]: merged };
+    await deps.sysSet(env, imapKey(cfgId), JSON.stringify({ ts: Date.now(), map: nextMap }));
+    return merged;
+  }
+
+  const listRes = await callInternalApi(
+    app,
+    deps,
+    env,
+    ctx,
+    `/api/cfgs/${encodeURIComponent(cfgId)}/instances`
+  );
+  if (listRes.ok) {
+    const items = Array.isArray(listRes.data?.items) ? listRes.data.items : [];
+    const fallbackRegion = String(listRes.data?.region || inst.region || "");
+    const map = await buildAndSaveInstanceMap(deps, env, cfgId, items, fallbackRegion);
+    return map[short8]?.id ? map[short8] : null;
+  }
+  return inst;
+}
+
 async function buildInstanceDetailView(app, deps, env, ctx, cfgId, short8) {
-  const inst = await resolveInstanceByShortId(app, deps, env, ctx, cfgId, short8);
+  const resolved = await resolveInstanceEntry(app, deps, env, ctx, cfgId, short8);
+  const inst = resolved?.entry
+    ? await refreshLiveInstanceEntry(app, deps, env, ctx, cfgId, short8, resolved)
+    : null;
   if (!inst) {
     return {
       text: truncateTelegramText("<b>⚠️ 未找到该实例</b>\n实例可能已终止或配置已移除。"),
@@ -750,13 +816,18 @@ async function buildInstanceDoView(app, deps, env, ctx, op, cfgId, short8) {
     ];
   }
 
-  const lines = res.ok
+  const bizOk = res.ok && res.data?.ok !== false;
+  if (bizOk) {
+    await deps.sysSet(env, imapKey(cfgId), "");
+  }
+
+  const lines = bizOk
     ? successLines
     : [
         "<b>❌ 实例操作失败</b>",
         "",
         `实例：<b>${escapeHtml(inst.name)}</b>`,
-        `错误：<code>${escapeHtml(res.error || "执行失败")}</code>`,
+        `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
       ];
 
   return {
@@ -1179,7 +1250,8 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
         `/api/tasks/${encodeURIComponent(taskId)}/run`,
         { method: "POST" }
       );
-      const lines = res.ok
+      const bizOk = res.ok && res.data?.ok !== false;
+      const lines = bizOk
         ? [
             "<b>⚡ 抢机任务已执行</b>",
             "",
@@ -1188,7 +1260,7 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
         : [
             "<b>❌ 抢机任务执行失败</b>",
             "",
-            `错误：<code>${escapeHtml(res.error || res.data?.message || "执行失败")}</code>`,
+            `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
           ];
       await editOrSendHtml(
         botToken,
@@ -1228,7 +1300,8 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
               method: "PATCH",
               body: { status: "running" },
             });
-      const lines = res.ok
+      const bizOk = res.ok && res.data?.ok !== false;
+      const lines = bizOk
         ? op === "run"
           ? [
               "<b>✅ 换 IP 任务执行完成</b>",
@@ -1238,9 +1311,9 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
             ]
           : ["<b>✅ 换 IP 任务已恢复运行</b>", "", "系统已触发后台换 IP 调度。"]
         : [
-            "<b>❌ 换 IP 任务操作失败</b>",
+            op === "run" ? "<b>❌ 换 IP 任务执行失败</b>" : "<b>❌ 换 IP 任务操作失败</b>",
             "",
-            `错误：<code>${escapeHtml(res.error || "执行失败")}</code>`,
+            `错误：<code>${escapeHtml(res.data?.message || res.data?.error || res.error || "执行失败")}</code>`,
           ];
       await editOrSendHtml(
         botToken,
