@@ -200003,25 +200003,6 @@ if (typeof g.process === "undefined" || typeof g.process.nextTick !== "function"
   g.process = g.process || {};
   g.process.nextTick = (fn, ...args) => queueMicrotask(() => fn(...args));
 }
-function base64UrlToBytes(s) {
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, "=");
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-__name(base64UrlToBytes, "base64UrlToBytes");
-function bytesToBase64(bytes) {
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s);
-}
-__name(bytesToBase64, "bytesToBase64");
-function toBase64Url2(bytes) {
-  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-__name(toBase64Url2, "toBase64Url");
 function mpint(bytes) {
   let start = 0;
   while (start < bytes.length - 1 && bytes[start] === 0) start++;
@@ -200044,8 +200025,8 @@ async function generateVncKeyPair() {
     const { publicKey, privateKey } = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
     const jwk = publicKey.export({ format: "jwk" });
     if (!jwk.n || !jwk.e) continue;
-    const e = base64UrlToBytes(jwk.e);
-    const n = base64UrlToBytes(jwk.n);
+    const e = fromBase64Url(jwk.e);
+    const n = fromBase64Url(jwk.n);
     const alg = new TextEncoder().encode("ssh-rsa");
     const algLen = new Uint8Array(4);
     new DataView(algLen.buffer).setUint32(0, alg.length);
@@ -200060,7 +200041,7 @@ async function generateVncKeyPair() {
     body.set(eMp, off);
     off += eMp.length;
     body.set(nMp, off);
-    const publicKeyOpenSSH = `ssh-rsa ${bytesToBase64(body)} oci-helper-vnc`;
+    const publicKeyOpenSSH = `ssh-rsa ${toBase64(body)} oci-helper-vnc`;
     const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
     try {
       const parsed = ssh2Utils.parseKey(privateKeyPem);
@@ -200157,7 +200138,6 @@ async function createConsoleConnection(clients, instanceId, publicKeyOpenSSH) {
     throw new Error("\u7B49\u5F85 Console Connection \u5C31\u7EEA\u8D85\u65F6\uFF08\u5DF2\u7B49 60 \u79D2\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\uFF09");
   }, "createOnce");
   const errorText = /* @__PURE__ */ __name((e) => `${e?.statusCode ?? ""} ${e?.code ?? ""} ${e?.serviceError?.code ?? ""} ${e?.message ?? ""} ${e?.serviceError?.message ?? ""}`, "errorText");
-  const isInstanceBusy = /* @__PURE__ */ __name((e) => /is currently being modified|currently being modified/i.test(errorText(e)), "isInstanceBusy");
   const is409 = /* @__PURE__ */ __name((e) => {
     const text = errorText(e);
     if (/is currently being modified/i.test(text)) return false;
@@ -200273,22 +200253,22 @@ async function sshFingerprint(publicKeyOpenSSH) {
 __name(sshFingerprint, "sshFingerprint");
 function vncSessionId() {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
-  return `vnc_${toBase64Url2(bytes)}`;
+  return `vnc_${toBase64Url(bytes)}`;
 }
 __name(vncSessionId, "vncSessionId");
 async function signVncToken(secret, sessionId, expiresAt) {
-  const payload = toBase64Url2(
-    new TextEncoder().encode(JSON.stringify({ sid: sessionId, exp: expiresAt }))
+  const payload = toBase64Url(
+    enc.encode(JSON.stringify({ sid: sessionId, exp: expiresAt }))
   );
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(`vnc-ws:${secret}`),
+    enc.encode(`vnc-ws:${secret}`),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-  return `${payload}.${toBase64Url2(new Uint8Array(sig))}`;
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(payload));
+  return `${payload}.${toBase64Url(new Uint8Array(sig))}`;
 }
 __name(signVncToken, "signVncToken");
 async function verifyVncToken(secret, token) {
@@ -200297,15 +200277,15 @@ async function verifyVncToken(secret, token) {
   try {
     const key = await crypto.subtle.importKey(
       "raw",
-      new TextEncoder().encode(`vnc-ws:${secret}`),
+      enc.encode(`vnc-ws:${secret}`),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["verify"]
     );
-    const sigBytes = base64UrlToBytes(parts[1]);
-    const ok = await crypto.subtle.verify("HMAC", key, sigBytes, new TextEncoder().encode(parts[0]));
+    const sigBytes = fromBase64Url(parts[1]);
+    const ok = await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(parts[0]));
     if (!ok) return null;
-    const data = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[0])));
+    const data = JSON.parse(dec.decode(fromBase64Url(parts[0])));
     if (typeof data.exp !== "number" || data.exp <= Date.now()) return null;
     if (typeof data.sid !== "string" || !data.sid) return null;
     return data.sid;
@@ -200432,12 +200412,43 @@ async function listInstances(c, filter = {}) {
   );
   const alive = instances.filter((i) => i.lifecycleState !== "TERMINATED");
   const ads = [...new Set(alive.map((i) => i.availabilityDomain ?? "").filter((x) => !!x))];
-  const volumes = await bootVolumeSizes(c, ads);
+  const [volumes, allVnicAttachments] = await Promise.all([
+    bootVolumeSizes(c, ads),
+    // 一次性拉取全区间 VNIC 挂载，避免按实例逐台 N+1 查询撞 50 子请求上限
+    alive.length ? listAll((page) => c.compute.listVnicAttachments({ compartmentId: c.compartmentId, page })).catch(() => null) : Promise.resolve([])
+  ]);
+  const vnicIdsByInstance = /* @__PURE__ */ new Map();
+  if (allVnicAttachments) {
+    for (const att of allVnicAttachments) {
+      if (!att.instanceId || !att.vnicId) continue;
+      if (att.lifecycleState && att.lifecycleState !== "ATTACHED") continue;
+      const arr = vnicIdsByInstance.get(att.instanceId) ?? [];
+      arr.push(att.vnicId);
+      vnicIdsByInstance.set(att.instanceId, arr);
+    }
+  }
+  const fetchIpsByVnicIds = /* @__PURE__ */ __name(async (vnicIds) => {
+    const publicIps = [];
+    const privateIps = [];
+    const ipv6Addresses = [];
+    for (const vnicId of vnicIds) {
+      try {
+        const vnic = await c.vnet.getVnic({ vnicId });
+        if (vnic.vnic?.publicIp) publicIps.push(vnic.vnic.publicIp);
+        if (vnic.vnic?.privateIp) privateIps.push(vnic.vnic.privateIp);
+        for (const ip6 of vnic.vnic?.ipv6Addresses ?? []) if (ip6) ipv6Addresses.push(ip6);
+      } catch {
+      }
+    }
+    return { publicIps, privateIps, ipv6Addresses };
+  }, "fetchIpsByVnicIds");
   const result = [];
   const batchSize = 5;
   for (let i = 0; i < alive.length; i += batchSize) {
     const batch = alive.slice(i, i + batchSize);
-    const ipsList = await Promise.all(batch.map((inst) => getInstanceIps(c, inst.id)));
+    const ipsList = await Promise.all(
+      batch.map((inst) => allVnicAttachments ? fetchIpsByVnicIds(vnicIdsByInstance.get(inst.id) ?? []) : getInstanceIps(c, inst.id))
+    );
     for (let j = 0; j < batch.length; j++) {
       const inst = batch[j];
       const { publicIps, privateIps, ipv6Addresses } = ipsList[j];
@@ -201220,18 +201231,6 @@ var MAX_SERVICE_SCAN = 6;
 var MAX_USAGE_LOOKUP = 30;
 var CACHE_TTL_MS = 6e4;
 var cache = /* @__PURE__ */ new Map();
-async function listAllPages(fn) {
-  const out = [];
-  let page = void 0;
-  for (let i = 0; i < 20; i++) {
-    const res = await fn(page);
-    out.push(...res.items ?? []);
-    page = res.opcNextPage;
-    if (!page) break;
-  }
-  return out;
-}
-__name(listAllPages, "listAllPages");
 function scopeText(v) {
   if (!v) return "";
   if (typeof v === "string") return v;
@@ -201239,7 +201238,7 @@ function scopeText(v) {
 }
 __name(scopeText, "scopeText");
 async function listLimitServices(c) {
-  const items = await listAllPages(
+  const items = await listAll(
     (page) => c.limits.listServices({ compartmentId: c.compartmentId, limit: 100, page })
   );
   return [...new Set(items.map((s) => s?.name).filter((n) => !!n))].sort();
@@ -201247,7 +201246,7 @@ async function listLimitServices(c) {
 __name(listLimitServices, "listLimitServices");
 async function fetchServiceLimits(c, service) {
   const [defs, values] = await Promise.all([
-    listAllPages(
+    listAll(
       (page) => c.limits.listLimitDefinitions({
         compartmentId: c.compartmentId,
         serviceName: service,
@@ -201255,7 +201254,7 @@ async function fetchServiceLimits(c, service) {
         page
       })
     ),
-    listAllPages(
+    listAll(
       (page) => c.limits.listLimitValues({
         compartmentId: c.compartmentId,
         serviceName: service,
@@ -201409,13 +201408,6 @@ runcmd:
 `;
 }
 __name(buildCloudInit, "buildCloudInit");
-function toBase64Utf8(text) {
-  const bytes = new TextEncoder().encode(text);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
-}
-__name(toBase64Utf8, "toBase64Utf8");
 
 // src/lib/presets.ts
 var ARCH_PRESETS = [
@@ -201517,7 +201509,7 @@ async function batchLaunch(c, p) {
   if (sshPublicKey && !/^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp\d{3})\s+[A-Za-z0-9+/=]{32,}/.test(sshPublicKey)) {
     throw new Error("SSH \u516C\u94A5\u683C\u5F0F\u4E0D\u6B63\u786E");
   }
-  const userDataBase64 = password ? toBase64Utf8(buildCloudInit(password)) : void 0;
+  const userDataBase64 = password ? toBase64(enc.encode(buildCloudInit(password))) : void 0;
   let subnets = await listSubnets(c);
   let networkCreated = false;
   if (!subnets.length) {
@@ -201547,7 +201539,6 @@ async function batchLaunch(c, p) {
         bootVolumeGb: 50,
         imageId: image.id,
         subnetId: subnet.id,
-        ipv6SubnetCidr: subnet.ipv6CidrBlock || void 0,
         rootPassword: password || void 0,
         sshPublicKey: sshPublicKey || void 0,
         userDataBase64
@@ -201558,7 +201549,17 @@ async function batchLaunch(c, p) {
       errors.push(`\u7B2C ${i + 1} \u53F0: ${e?.message ?? String(e)}`);
     }
   }
-  return { items, errors, subnetId: subnet.id ?? "", networkCreated, password, shape: free.shape };
+  return {
+    items,
+    errors,
+    subnetId: subnet.id ?? "",
+    networkCreated,
+    password,
+    shape: free.shape,
+    ocpus: ocpus ?? 1,
+    memoryGb: memoryGb ?? 1,
+    availabilityDomain: ad
+  };
 }
 __name(batchLaunch, "batchLaunch");
 
@@ -201604,15 +201605,6 @@ async function googlePublicKeys(force = false) {
   return keys;
 }
 __name(googlePublicKeys, "googlePublicKeys");
-function b64urlToBytes(s) {
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, "=");
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-__name(b64urlToBytes, "b64urlToBytes");
 async function importJwk(jwk) {
   return crypto.subtle.importKey(
     "jwk",
@@ -201629,7 +201621,7 @@ async function verifyGoogleIdToken(credential, clientId) {
   const [headerB64, payloadB64, sigB64] = parts;
   let header;
   try {
-    header = JSON.parse(new TextDecoder().decode(b64urlToBytes(headerB64)));
+    header = JSON.parse(dec.decode(fromBase64Url(headerB64)));
   } catch {
     throw new Error("Google \u51ED\u8BC1\u89E3\u6790\u5931\u8D25");
   }
@@ -201645,13 +201637,13 @@ async function verifyGoogleIdToken(credential, clientId) {
   const ok = await crypto.subtle.verify(
     "RSASSA-PKCS1-v1_5",
     key,
-    b64urlToBytes(sigB64),
-    new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+    fromBase64Url(sigB64),
+    enc.encode(`${headerB64}.${payloadB64}`)
   );
   if (!ok) throw new Error("Google \u51ED\u8BC1\u7B7E\u540D\u6821\u9A8C\u5931\u8D25");
   let payload;
   try {
-    payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(payloadB64)));
+    payload = JSON.parse(dec.decode(fromBase64Url(payloadB64)));
   } catch {
     throw new Error("Google \u51ED\u8BC1\u5185\u5BB9\u89E3\u6790\u5931\u8D25");
   }
@@ -201706,11 +201698,13 @@ async function queryMetric(c, region, query, start, end) {
   return out.sort((a, b) => a.time.localeCompare(b.time));
 }
 __name(queryMetric, "queryMetric");
+var SAFE_OCID_RE = /^[A-Za-z0-9._:-]+$/;
 async function getTrafficData(c, p) {
   const start = new Date(p.start);
   const end = new Date(p.end);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error("\u65F6\u95F4\u683C\u5F0F\u4E0D\u6B63\u786E");
   if (!p.vnicId) throw new Error("\u8BF7\u9009\u62E9 VNIC");
+  if (!SAFE_OCID_RE.test(String(p.vnicId))) throw new Error("VNIC ID \u683C\u5F0F\u4E0D\u6B63\u786E");
   const inQ = `${IN_METRIC}[${p.interval}]{resourceId = "${p.vnicId}"}.sum()`;
   const outQ = `${OUT_METRIC}[${p.interval}]{resourceId = "${p.vnicId}"}.sum()`;
   const [inPts, outPts] = await Promise.all([
@@ -201734,42 +201728,17 @@ async function getMonthlyTraffic(c, p) {
     (page) => c.compute.listInstances({ compartmentId: c.compartmentId, page })
   );
   const instances = rawInstances.filter((i) => i.lifecycleState !== "TERMINATED");
-  let inbound = 0;
-  let outbound = 0;
-  const vnicIds = [];
-  const instBatchSize = 6;
-  for (let i = 0; i < instances.length; i += instBatchSize) {
-    const batch = instances.slice(i, i + instBatchSize);
-    const batchAtts = await Promise.all(
-      batch.map(
-        (inst) => c.compute.listVnicAttachments({ compartmentId: c.compartmentId, instanceId: inst.id }).then((r) => r.items ?? []).catch(() => [])
-      )
-    );
-    for (const items of batchAtts) {
-      for (const a of items) if (a.vnicId) vnicIds.push(a.vnicId);
-    }
-  }
-  const metricBatchSize = 6;
-  for (let i = 0; i < vnicIds.length; i += metricBatchSize) {
-    const batch = vnicIds.slice(i, i + metricBatchSize);
-    const results = await Promise.all(
-      batch.map(async (id) => {
-        const [inp, outp] = await Promise.all([
-          queryMetric(c, p.region, `${IN_METRIC}[1440m]{resourceId = "${id}"}.sum()`, start, end),
-          queryMetric(c, p.region, `${OUT_METRIC}[1440m]{resourceId = "${id}"}.sum()`, start, end)
-        ]);
-        return {
-          in: inp.reduce((s, x) => s + x.value, 0),
-          out: outp.reduce((s, x) => s + x.value, 0)
-        };
-      })
-    );
-    for (const r of results) {
-      inbound += r.in;
-      outbound += r.out;
-    }
-  }
-  return { instanceCount: instances.length, inbound, outbound };
+  if (!instances.length) return { instanceCount: 0, inbound: 0, outbound: 0 };
+  // 按区间维度直接汇总，固定 2 次监控请求，避免逐网卡 N+1 撞 50 子请求上限
+  const [inp, outp] = await Promise.all([
+    queryMetric(c, p.region, `${IN_METRIC}[1440m].sum()`, start, end),
+    queryMetric(c, p.region, `${OUT_METRIC}[1440m].sum()`, start, end)
+  ]);
+  return {
+    instanceCount: instances.length,
+    inbound: inp.reduce((s, x) => s + x.value, 0),
+    outbound: outp.reduce((s, x) => s + x.value, 0)
+  };
 }
 __name(getMonthlyTraffic, "getMonthlyTraffic");
 function groupByFor(reportType) {
@@ -202026,6 +201995,7 @@ async function resetIamUserPassword(c, userId) {
   }
   const url = await getDomainUrl(c);
   if (!url) throw new Error("\u672A\u80FD\u901A\u8FC7\u7ECF\u5178 API \u91CD\u7F6E\u5BC6\u7801\uFF0C\u4E14\u672A\u627E\u5230 Identity Domain");
+  if (!SAFE_OCID_RE.test(String(userId ?? ""))) throw new Error("\u7528\u6237 ID \u683C\u5F0F\u4E0D\u6B63\u786E");
   const dc = domainsClient(c, url);
   const list = await dc.listUsers({
     filter: `ocid eq "${userId}"`,
@@ -202220,8 +202190,11 @@ async function getTenantOverview(c, tenancyId) {
   };
 }
 __name(getTenantOverview, "getTenantOverview");
+function redactSecretText(s) {
+  return String(s ?? "").replace(/\/bot[^/\s]+\//g, "/bot***/").replace(/([?&]token=)[^&\s]*/gi, "$1***");
+}
+__name(redactSecretText, "redactSecretText");
 async function sendTelegram(token, chatId, text) {
-  const redact = /* @__PURE__ */ __name((s) => String(s ?? "").replace(/\/bot[^/\s]+\//g, "/bot***/"), "redact");
   let res;
   try {
     res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -202231,11 +202204,11 @@ async function sendTelegram(token, chatId, text) {
       signal: AbortSignal.timeout(8e3)
     });
   } catch (e) {
-    throw new Error(redact(e?.message ?? e));
+    throw new Error(redactSecretText(e?.message ?? e));
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.ok === false) {
-    throw new Error(redact(data?.description || `Telegram \u8FD4\u56DE ${res.status}`));
+    throw new Error(redactSecretText(data?.description || `Telegram \u8FD4\u56DE ${res.status}`));
   }
   return true;
 }
@@ -202326,7 +202299,7 @@ function keySecret(env) {
 }
 __name(keySecret, "keySecret");
 function keySecretsForRead(env) {
-  return [env.KEY_SECRET, env.AUTH_SECRET, "dev-insecure-key"].filter(Boolean);
+  return [env.KEY_SECRET, env.AUTH_SECRET].filter(Boolean);
 }
 __name(keySecretsForRead, "keySecretsForRead");
 async function sysGet(env, key) {
@@ -202458,9 +202431,9 @@ async function bootBroadcast(env, p) {
     const url = `${BOOT_BROADCAST_URL}?${qs.toString()}`;
     const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5e3) });
     const body = await res.text().catch(() => "");
-    console.log(`[Broadcast] \u653E\u8D27\u9762\u677F ${res.status} ${body.slice(0, 120)} url=${url.replace(/token=[^&]*/, "token=***")}`);
+    console.log(`[Broadcast] \u653E\u8D27\u9762\u677F ${res.status} ${body.slice(0, 120)} url=${redactSecretText(url)}`);
   } catch (e) {
-    console.log(`[Broadcast] \u653E\u8D27\u9762\u677F\u5F02\u5E38: ${e?.message ?? e}`);
+    console.log(`[Broadcast] \u653E\u8D27\u9762\u677F\u5F02\u5E38: ${redactSecretText(e?.message ?? e)}`);
   }
 }
 __name(bootBroadcast, "bootBroadcast");
@@ -202473,7 +202446,7 @@ async function channelBroadcast(env, text) {
     const body = await res.text().catch(() => "");
     console.log(`[Broadcast] TG\u9891\u9053 ${res.status} ${body.slice(0, 120)}`);
   } catch (e) {
-    console.log(`[Broadcast] TG\u9891\u9053\u5F02\u5E38: ${e?.message ?? e}`);
+    console.log(`[Broadcast] TG\u9891\u9053\u5F02\u5E38: ${redactSecretText(e?.message ?? e)}`);
   }
 }
 __name(channelBroadcast, "channelBroadcast");
@@ -202483,20 +202456,12 @@ function archOf(shape) {
   return "amd";
 }
 __name(archOf, "archOf");
-function fmtParts() {
+function fmtNow() {
   const d = new Date(Date.now() + 8 * 60 * 60 * 1e3);
   const p = /* @__PURE__ */ __name((n) => String(n).padStart(2, "0"), "p");
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
 }
-__name(fmtParts, "fmtParts");
-function fmtNow() {
-  return fmtParts();
-}
 __name(fmtNow, "fmtNow");
-function fmtChannelNow() {
-  return fmtParts();
-}
-__name(fmtChannelNow, "fmtChannelNow");
 function elapsedSince(start) {
   if (!start) return "\u672A\u77E5";
   const ms = Date.now() - new Date(start).getTime();
@@ -202565,7 +202530,7 @@ async function notifyLaunchSuccess(env, p) {
   const channelText = [
     "\u3010\u5F00\u673A\u63D0\u9192\u3011\u6709\u7528\u6237\u6210\u529F\u5F00\u673A\u{1F389}",
     "",
-    `\u65F6\u95F4\uFF1A ${fmtChannelNow()}`,
+    `\u65F6\u95F4\uFF1A ${fmtNow()}`,
     `Region\uFF1A ${p.region}`,
     `\u533A\u57DF\uFF1A ${regionName(p.region)}`,
     `CPU\u7C7B\u578B\uFF1A ${arch.toUpperCase()}`,
@@ -202798,6 +202763,13 @@ function describeOciCall(method, path) {
   return `${method} ${p}`;
 }
 __name(describeOciCall, "describeOciCall");
+function sanitizeOciDetail(text) {
+  return String(text ?? "").replace(
+    /("(?:root-password|password|passphrase|user_data|privateKey|secret)"\s*:\s*")([^"\\]*(?:\\.[^"\\]*)*)("|$)/gi,
+    "$1***$3"
+  );
+}
+__name(sanitizeOciDetail, "sanitizeOciDetail");
 var installed = false;
 function installOciFetchTracer() {
   if (installed) return;
@@ -202820,10 +202792,12 @@ function installOciFetchTracer() {
       try {
         const res = await baseFetch(input, init);
         let body = "";
-        try {
-          body = (await res.clone().text()).slice(0, 2e3);
-        } catch {
-          body = "";
+        if (!res.ok) {
+          try {
+            body = sanitizeOciDetail(await res.clone().text()).slice(0, 2e3);
+          } catch {
+            body = "";
+          }
         }
         await safePublish(ctx, {
           level: res.ok ? "info" : "error",
@@ -202847,7 +202821,7 @@ function installOciFetchTracer() {
           status: 0,
           ms: Date.now() - started,
           message: `${op} \u2192 \u7F51\u7EDC\u9519\u8BEF`,
-          detail: e?.message ?? String(e)
+          detail: sanitizeOciDetail(e?.message ?? String(e))
         });
         throw e;
       }
@@ -202897,7 +202871,7 @@ async function getCfg(env, id) {
   return env.DB.prepare("SELECT * FROM oci_cfg WHERE id = ?").bind(id).first();
 }
 __name(getCfg, "getCfg");
-async function buildClientsFromCfg(env, cfg, region, compartmentId) {
+async function clientsFor(env, cfg, region, compartmentId) {
   const secret = keySecretsForRead(env);
   const privateKey = await decryptText(secret, cfg.private_key_enc);
   const passphrase = cfg.passphrase_enc ? await decryptText(secret, cfg.passphrase_enc) : null;
@@ -202905,13 +202879,18 @@ async function buildClientsFromCfg(env, cfg, region, compartmentId) {
     tenancyOcid: cfg.tenancy_ocid,
     userOcid: cfg.user_ocid,
     fingerprint: cfg.fingerprint,
-    region,
+    region: region || cfg.region,
     privateKey,
     passphrase,
-    compartmentId: compartmentId?.trim() || cfg.compartment_id
+    compartmentId: compartmentId?.trim() || cfg.compartment_id || cfg.tenancy_ocid
   });
 }
-__name(buildClientsFromCfg, "buildClientsFromCfg");
+__name(clientsFor, "clientsFor");
+function parseCidrList(raw2) {
+  const parsed = parseJson(raw2);
+  return Array.isArray(parsed) ? parsed : [];
+}
+__name(parseCidrList, "parseCidrList");
 function taskTrace(env, task) {
   return {
     taskId: task.id,
@@ -202920,14 +202899,15 @@ function taskTrace(env, task) {
   };
 }
 __name(taskTrace, "taskTrace");
-async function runTaskOnce(env, taskId) {
+async function runTaskOnce(env, taskId, opts = {}) {
   const now = Date.now();
   const task = await env.DB.prepare("SELECT * FROM task WHERE id = ? AND type = 'launch'").bind(taskId).first();
   if (!task) return { ok: false, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728", launched: 0 };
-  if (task.status !== "running") return { ok: false, message: "\u4EFB\u52A1\u672A\u5728\u8FD0\u884C", launched: 0 };
+  if (!opts.force && task.status !== "running") return { ok: false, message: "\u4EFB\u52A1\u672A\u5728\u8FD0\u884C", launched: 0 };
+  const lockUntil = now + LOCK_MS;
   const lock = await env.DB.prepare(
     "UPDATE task SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)"
-  ).bind(now + LOCK_MS, taskId, now).run();
+  ).bind(lockUntil, taskId, now).run();
   if (!lock.meta?.changes) return { ok: false, message: "\u4EFB\u52A1\u6B63\u5728\u6267\u884C\u4E2D", launched: 0 };
   const trace = taskTrace(env, task);
   return runTraced(trace, async () => {
@@ -202940,7 +202920,7 @@ async function runTaskOnce(env, taskId) {
       const cfg = await getCfg(env, task.cfg_id);
       if (!cfg) throw new Error("OCI \u914D\u7F6E\u5DF2\u88AB\u5220\u9664");
       await log("info", `\u5F00\u59CB\u6267\u884C\uFF1A${task.shape} ${task.ocpus}C/${task.memory_gb}G \xB7 ${task.region}`);
-      const clients = await buildClientsFromCfg(
+      const clients = await clientsFor(
         env,
         cfg,
         task.region || cfg.region,
@@ -203001,10 +202981,9 @@ async function runTaskOnce(env, taskId) {
               bootVolumeGb: task.boot_volume_gb,
               imageId: image.id,
               subnetId,
-              ipv6SubnetCidr: subnetIpv6 || void 0,
               rootPassword,
               sshPublicKey: sshKey || void 0,
-              userDataBase64: userData ? toBase64Utf8(userData) : void 0
+              userDataBase64: userData ? toBase64(enc.encode(userData)) : void 0
             });
             launched++;
             success = true;
@@ -203083,11 +203062,10 @@ async function runTaskOnce(env, taskId) {
         await log("success", `${message}\uFF1B\u4EFB\u52A1\u5DF2\u5B8C\u6210\u5E76\u5220\u9664`);
       } else {
         await env.DB.prepare(
-          `UPDATE task SET success_count = ?, attempt_count = attempt_count + 1, status = ?,
+          `UPDATE task SET success_count = ?, attempt_count = attempt_count + 1,
             last_message = ?, last_error = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
         ).bind(
           successCount,
-          "running",
           message,
           launched ? null : blockReason,
           Date.now() + nextDelay * 1e3,
@@ -203120,7 +203098,7 @@ async function runTaskOnce(env, taskId) {
       return { ok: false, message, launched };
     } finally {
       if (!deleted) {
-        await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ?").bind(taskId).run();
+        await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ? AND locked_until = ?").bind(taskId, lockUntil).run();
       }
     }
   });
@@ -203152,22 +203130,23 @@ async function runIpTaskOnce(env, taskId, opts = {}) {
   const task = await env.DB.prepare("SELECT * FROM task WHERE id = ? AND type = 'ip'").bind(taskId).first();
   if (!task) return { ok: false, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728" };
   if (!opts.force && task.status !== "running") return { ok: false, message: "\u4EFB\u52A1\u672A\u5728\u8FD0\u884C" };
+  const lockUntil = now + LOCK_MS;
   const lock = await env.DB.prepare(
     "UPDATE task SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)"
-  ).bind(now + LOCK_MS, taskId, now).run();
+  ).bind(lockUntil, taskId, now).run();
   if (!lock.meta?.changes) return { ok: false, message: "\u4EFB\u52A1\u6B63\u5728\u6267\u884C\u4E2D" };
   const intervalMs = (task.interval_sec || 60) * 1e3;
   try {
     const cfg = await getCfg(env, task.cfg_id);
     if (!cfg) throw new Error("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
-    const cidrs = task.cidr_list ? JSON.parse(task.cidr_list) : [];
+    const cidrs = parseCidrList(task.cidr_list);
     const instanceId = task.instance_id ?? "";
     if (!instanceId) throw new Error("\u4EFB\u52A1\u7F3A\u5C11\u5B9E\u4F8B ID");
     const trace = {
       cfgId: cfg.id,
       publish: /* @__PURE__ */ __name((entry) => publishEntry(env, { ...entry, cfgId: cfg.id, taskId: task.id }), "publish")
     };
-    const clients = await buildClientsFromCfg(env, cfg, task.region || cfg.region, task.compartment_id || void 0);
+    const clients = await clientsFor(env, cfg, task.region || cfg.region, task.compartment_id || void 0);
     const isV6 = (task.ip_version ?? "ipv4") === "ipv6";
     const result = isV6 ? await runTraced(trace, async () => {
       const r = await changeIpv6(clients, instanceId);
@@ -203235,7 +203214,7 @@ async function runIpTaskOnce(env, taskId, opts = {}) {
     });
     return { ok: false, message };
   } finally {
-    await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ?").bind(taskId).run();
+    await env.DB.prepare("UPDATE task SET locked_until = NULL WHERE id = ? AND locked_until = ?").bind(taskId, lockUntil).run();
   }
 }
 __name(runIpTaskOnce, "runIpTaskOnce");
@@ -203609,7 +203588,7 @@ async function authSecret(env) {
   if (row?.value) return row.value;
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  await env.DB.prepare("INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)").bind(KEY, secret, nowIso2()).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)").bind(KEY, secret, nowIso()).run();
   const again = await env.DB.prepare("SELECT value FROM sys_cfg WHERE key = ?").bind(KEY).first();
   return again?.value ?? secret;
 }
@@ -203621,7 +203600,7 @@ async function expectedPasswordHash(env) {
   if (row?.value) return row.value;
   const generated = randomPassword(24);
   const hash = await passwordHash(generated);
-  await env.DB.prepare("INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)").bind(KEY, hash, nowIso2()).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)").bind(KEY, hash, nowIso()).run();
   console.log(`[AUTH] \u672A\u8BBE\u7F6E AUTH_PASSWORD\uFF0C\u5DF2\u751F\u6210\u968F\u673A\u521D\u59CB\u5BC6\u7801\uFF1A${generated}\uFF08\u8BF7\u5C3D\u5FEB\u8BBE\u7F6E AUTH_PASSWORD \u73AF\u5883\u53D8\u91CF\uFF09`);
   const again = await env.DB.prepare("SELECT value FROM sys_cfg WHERE key = ?").bind(KEY).first();
   return again?.value ?? hash;
@@ -203632,7 +203611,7 @@ async function sessionVersion(env) {
   const row = await env.DB.prepare("SELECT value FROM sys_cfg WHERE key = ?").bind(SESSION_VERSION_KEY).first();
   if (row?.value) return row.value;
   const value = randomId("s");
-  await env.DB.prepare("INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)").bind(SESSION_VERSION_KEY, value, nowIso2()).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)").bind(SESSION_VERSION_KEY, value, nowIso()).run();
   const again = await env.DB.prepare("SELECT value FROM sys_cfg WHERE key = ?").bind(SESSION_VERSION_KEY).first();
   return again?.value ?? value;
 }
@@ -203641,7 +203620,7 @@ async function rotateSessionVersion(env) {
   await env.DB.prepare(
     `INSERT INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-  ).bind(SESSION_VERSION_KEY, randomId("s"), nowIso2()).run();
+  ).bind(SESSION_VERSION_KEY, randomId("s"), nowIso()).run();
 }
 __name(rotateSessionVersion, "rotateSessionVersion");
 async function authVersion(env) {
@@ -203649,10 +203628,6 @@ async function authVersion(env) {
   return `${pwd}.${await sessionVersion(env)}`;
 }
 __name(authVersion, "authVersion");
-function nowIso2() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-__name(nowIso2, "nowIso");
 function badRequest(message) {
   return Response.json({ error: message }, { status: 400 });
 }
@@ -203705,25 +203680,6 @@ function publicCfg(row) {
   };
 }
 __name(publicCfg, "publicCfg");
-async function getCfg2(env, id) {
-  return env.DB.prepare("SELECT * FROM oci_cfg WHERE id = ?").bind(id).first();
-}
-__name(getCfg2, "getCfg");
-async function clientsFor(env, row, region, compartmentId) {
-  const privateKey = await decryptText(keySecretsForRead(env), row.private_key_enc);
-  const passphrase = row.passphrase_enc ? await decryptText(keySecretsForRead(env), row.passphrase_enc) : null;
-  return createClients({
-    tenancyOcid: row.tenancy_ocid,
-    userOcid: row.user_ocid,
-    fingerprint: row.fingerprint,
-    region: region || row.region,
-    privateKey,
-    passphrase,
-    // 全局「区间」切换：显式传入则覆盖配置里的默认 compartment
-    compartmentId: compartmentId?.trim() || row.compartment_id || row.tenancy_ocid
-  });
-}
-__name(clientsFor, "clientsFor");
 function reqCompartment(c) {
   return (c.req.query("compartment") || "").trim();
 }
@@ -203812,7 +203768,7 @@ function getActiveLoginBucket(map, key, now) {
   return bucket;
 }
 __name(getActiveLoginBucket, "getActiveLoginBucket");
-async function recordLoginFailure(env, map, rateKey, ip, reason) {
+async function recordLoginFailure(env, map, rateKey, ip, reason, account = "admin") {
   const now = Date.now();
   if (map.size >= LOGIN_RATE_MAP_LIMIT) pruneLoginAttemptsMap(map, now);
   let bucket = getActiveLoginBucket(map, rateKey, now);
@@ -203824,7 +203780,7 @@ async function recordLoginFailure(env, map, rateKey, ip, reason) {
   bucket.fails.push(now);
   if (bucket.alerts.length < LOGIN_MAX_TG_ALERTS) {
     bucket.alerts.push(now);
-    await notifyLogin(env, { ip, account: "admin", ok: false, reason });
+    await notifyLogin(env, { ip, account, ok: false, reason });
   }
 }
 __name(recordLoginFailure, "recordLoginFailure");
@@ -203860,15 +203816,19 @@ app.post("/api/login", async (c) => {
       await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "MFA\u9A8C\u8BC1\u7801\u9519\u8BEF");
       return Response.json({ error: "\u52A8\u6001\u9A8C\u8BC1\u7801\u9519\u8BEF", needCode: true }, { status: 401 });
     }
-    const lastStep = await sysGet(c.env, "mfa.last_step");
-    if (stepCounter <= Number(lastStep || 0)) {
+    // 原子更新最后使用的步数，杜绝并发提交同一 6 位验证码的重放竞态（COALESCE 防 NULL 脏值锁死）
+    const claim = await c.env.DB.prepare(
+      `INSERT INTO sys_cfg (key, value, updated_at) VALUES ('mfa.last_step', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+       WHERE COALESCE(CAST(sys_cfg.value AS INTEGER), 0) < CAST(excluded.value AS INTEGER)`
+    ).bind(String(stepCounter), nowIso()).run();
+    if (!claim.meta?.changes) {
       await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "MFA\u9A8C\u8BC1\u7801\u91CD\u653E");
       return Response.json(
         { error: "\u8BE5\u52A8\u6001\u9A8C\u8BC1\u7801\u5DF2\u4F7F\u7528\uFF0C\u8BF7\u7B49\u5F85\u4E0B\u4E00\u4E2A\u9A8C\u8BC1\u7801", needCode: true },
         { status: 401 }
       );
     }
-    await sysSet(c.env, "mfa.last_step", String(stepCounter));
   }
   attemptsMap.delete(rateKey);
   await rotateSessionVersion(c.env);
@@ -203883,13 +203843,19 @@ app.get("/api/google/client-id", async (c) => {
 });
 app.post("/api/google/login", async (c) => {
   const body = await c.req.json().catch(() => ({}));
+  const ip = clientIp(c);
+  const rateKey = ip || "local";
+  const attemptsMap = getLoginAttemptsMap(c.env);
+  const activeBucket = getActiveLoginBucket(attemptsMap, rateKey, Date.now());
+  if (activeBucket && activeBucket.fails.length >= LOGIN_MAX_FAILS) {
+    return Response.json({ error: "\u767B\u5F55\u5C1D\u8BD5\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7 1 \u5206\u949F\u540E\u518D\u8BD5" }, { status: 429 });
+  }
   const credential = (body.credential ?? "").trim();
   if (!credential) return badRequest("\u7F3A\u5C11 Google \u51ED\u8BC1");
-  const ip = clientIp(c);
   const enabled = await sysGet(c.env, "google.enabled") === "1";
   const clientId = (await sysGet(c.env, "google.client_id"))?.trim() || "";
+  // 未启用时静默拒绝且不发 TG 告警，防止公网扫描无限刷屏
   if (!enabled || !clientId) {
-    await notifyLogin(c.env, { ip, account: "google", ok: false, reason: "Google\u767B\u5F55\u672A\u542F\u7528\u6216\u672A\u914D\u7F6E" });
     return badRequest("Google \u4E00\u952E\u767B\u5F55\u672A\u542F\u7528\u6216\u672A\u914D\u7F6E");
   }
   try {
@@ -203897,31 +203863,32 @@ app.post("/api/google/login", async (c) => {
     const allowed = await sysGet(c.env, "google.allowed_emails") ?? "";
     const list = allowed.split(/[,，]/).map((e) => e.trim().toLowerCase()).filter(Boolean);
     if (!list.length) {
-      await notifyLogin(c.env, { ip, account: payload.email, ok: false, reason: "\u672A\u914D\u7F6E Google \u8D26\u53F7\u767D\u540D\u5355" });
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "\u672A\u914D\u7F6E Google \u8D26\u53F7\u767D\u540D\u5355", payload.email);
       return badRequest("\u7CFB\u7EDF\u672A\u914D\u7F6E\u5141\u8BB8\u767B\u5F55\u7684 Google \u8D26\u53F7\u767D\u540D\u5355");
     }
     if (!list.includes(payload.email.toLowerCase())) {
-      await notifyLogin(c.env, { ip, account: payload.email, ok: false, reason: "Google \u8D26\u53F7\u4E0D\u5728\u767D\u540D\u5355" });
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "Google \u8D26\u53F7\u4E0D\u5728\u767D\u540D\u5355", payload.email);
       return badRequest(`Google \u8D26\u53F7 ${payload.email} \u4E0D\u5728\u5141\u8BB8\u767B\u5F55\u7684\u767D\u540D\u5355\u4E2D`);
     }
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(credential));
+    const digest = await crypto.subtle.digest("SHA-256", enc.encode(credential));
     const credHash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
     const usedKey = `google.used:${credHash}`;
-    const usedRow = await c.env.DB.prepare("SELECT value, updated_at FROM sys_cfg WHERE key = ?").bind(usedKey).first();
-    const expireAt = Number(usedRow?.value ?? 0) * 1e3 + 36e5;
-    if (usedRow && expireAt > Date.now()) {
-      await notifyLogin(c.env, { ip, account: payload.email, ok: false, reason: "Google \u51ED\u8BC1\u5DF2\u88AB\u4F7F\u7528" });
-      return Response.json({ error: "\u8BE5 Google \u51ED\u8BC1\u5DF2\u88AB\u4F7F\u7528\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55" }, { status: 401 });
-    }
-    await sysSet(c.env, usedKey, String(payload.exp));
     await c.env.DB.prepare(
       `DELETE FROM sys_cfg WHERE key LIKE 'google.used:%' AND CAST(value AS INTEGER) * 1000 + 3600000 < ?`
     ).bind(Date.now()).run();
+    const claimed = await c.env.DB.prepare(
+      "INSERT OR IGNORE INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)"
+    ).bind(usedKey, String(payload.exp), nowIso()).run();
+    if (!claimed.meta?.changes) {
+      await recordLoginFailure(c.env, attemptsMap, rateKey, ip, "Google \u51ED\u8BC1\u5DF2\u88AB\u4F7F\u7528", payload.email);
+      return Response.json({ error: "\u8BE5 Google \u51ED\u8BC1\u5DF2\u88AB\u4F7F\u7528\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55" }, { status: 401 });
+    }
+    attemptsMap.delete(rateKey);
     await rotateSessionVersion(c.env);
     await notifyLogin(c.env, { ip, account: payload.email, ok: true });
     return c.json({ token: await issueToken(await authSecret(c.env), await authVersion(c.env)) });
   } catch (e) {
-    await notifyLogin(c.env, { ip, account: "google", ok: false, reason: e?.message || "Google \u51ED\u8BC1\u6821\u9A8C\u5931\u8D25" });
+    await recordLoginFailure(c.env, attemptsMap, rateKey, ip, e?.message || "Google \u51ED\u8BC1\u6821\u9A8C\u5931\u8D25", "google");
     return Response.json({ error: errorMessage(e) }, { status: 401 });
   }
 });
@@ -203971,7 +203938,7 @@ app.post("/api/vnc/start", async (c) => {
   const cfgId = (body.cfgId ?? "").trim();
   const instanceId = (body.instanceId ?? "").trim();
   if (!cfgId || !instanceId) return badRequest("\u7F3A\u5C11\u914D\u7F6E ID \u6216\u5B9E\u4F8B ID");
-  const cfg = await getCfg2(c.env, cfgId);
+  const cfg = await getCfg(c.env, cfgId);
   if (!cfg) return badRequest("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
   try {
     const clients = await clientsFor(c.env, cfg, body.region || cfg.region, body.compartment);
@@ -204001,7 +203968,7 @@ app.post("/api/vnc/start", async (c) => {
       await c.env.DB.prepare(
         `INSERT INTO sys_cfg (key, value, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-      ).bind(VNC_SESSION_PREFIX2 + sid, await encryptText(keySecret(c.env), JSON.stringify(s)), nowIso2()).run();
+      ).bind(VNC_SESSION_PREFIX2 + sid, await encryptText(keySecret(c.env), JSON.stringify(s)), nowIso()).run();
     }, "saveSession");
     const buildFresh = /* @__PURE__ */ __name(async () => {
       const keyPair = await generateVncKeyPair();
@@ -204066,7 +204033,6 @@ app.post("/api/vnc/start", async (c) => {
     }, "pruneStale");
     const wsSecret = await authSecret(c.env);
     const token = await signVncToken(wsSecret, sessionId, Date.now() + VNC_TOKEN_TTL);
-    safeWaitUntil(c, cleanupExpiredVncSessions(c.env, clients, cfg));
     safeWaitUntil(c, pruneStale());
     return c.json({ token, ttl: VNC_TOKEN_TTL, warn: warn || void 0 });
   } catch (e) {
@@ -204107,7 +204073,7 @@ app.post("/api/vnc/attach", async (c) => {
       }
       if (!s || s.connectionId !== connectionId || s.cfgId !== cfgId) continue;
       const next = { ...s, expiresAt: Date.now() + VNC_SESSION_TTL };
-      await c.env.DB.prepare("UPDATE sys_cfg SET value = ?, updated_at = ? WHERE key = ?").bind(await encryptText(keySecret(c.env), JSON.stringify(next)), nowIso2(), row.key).run();
+      await c.env.DB.prepare("UPDATE sys_cfg SET value = ?, updated_at = ? WHERE key = ?").bind(await encryptText(keySecret(c.env), JSON.stringify(next)), nowIso(), row.key).run();
       const token = await signVncToken(
         await authSecret(c.env),
         row.key.slice(VNC_SESSION_PREFIX2.length),
@@ -204127,7 +204093,7 @@ app.get("/api/vnc/console-connections", async (c) => {
   const cfgId = (c.req.query("cfgId") ?? "").trim();
   const instanceId = (c.req.query("instanceId") ?? "").trim();
   if (!cfgId || !instanceId) return badRequest("\u7F3A\u5C11\u914D\u7F6E ID \u6216\u5B9E\u4F8B ID");
-  const cfg = await getCfg2(c.env, cfgId);
+  const cfg = await getCfg(c.env, cfgId);
   if (!cfg) return badRequest("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
   const region = (c.req.query("region") ?? "").trim() || void 0;
   const compartment = (c.req.query("compartment") ?? "").trim() || void 0;
@@ -204158,7 +204124,7 @@ app.get("/api/vnc/console-connections", async (c) => {
 app.delete("/api/vnc/console-connections/:connectionId", async (c) => {
   const cfgId = (c.req.query("cfgId") ?? "").trim();
   if (!cfgId) return badRequest("\u7F3A\u5C11\u914D\u7F6E ID");
-  const cfg = await getCfg2(c.env, cfgId);
+  const cfg = await getCfg(c.env, cfgId);
   if (!cfg) return badRequest("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
   const region = (c.req.query("region") ?? "").trim() || void 0;
   const compartment = (c.req.query("compartment") ?? "").trim() || void 0;
@@ -204193,21 +204159,6 @@ app.get("/api/vnc/ws", async (c) => {
   const stub = c.env.VNC_TUNNEL.get(c.env.VNC_TUNNEL.idFromName(sessionId));
   return stub.fetch(c.req.raw);
 });
-async function cleanupExpiredVncSessions(env, _clients, _cfg) {
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1e3;
-  const rows = await env.DB.prepare("SELECT key, value FROM sys_cfg WHERE key LIKE ?").bind(VNC_SESSION_PREFIX2 + "%").all();
-  for (const row of rows.results ?? []) {
-    try {
-      const session = JSON.parse(await decryptText(keySecretsForRead(env), row.value));
-      if (session.expiresAt <= cutoff) {
-        await env.DB.prepare("DELETE FROM sys_cfg WHERE key = ?").bind(row.key).run();
-      }
-    } catch {
-      await env.DB.prepare("DELETE FROM sys_cfg WHERE key = ?").bind(row.key).run();
-    }
-  }
-}
-__name(cleanupExpiredVncSessions, "cleanupExpiredVncSessions");
 app.get(
   "/api/meta",
   (c) => c.json({
@@ -204217,7 +204168,6 @@ app.get(
     defaultRegion: c.env.DEFAULT_REGION || "ap-singapore-1"
   })
 );
-app.get("/api/regions", (c) => c.json({ items: allRegions() }));
 app.get("/api/random-password", (c) => c.json({ password: randomPassword(16) }));
 app.get("/api/sys", async (c) => {
   const { results } = await c.env.DB.prepare("SELECT key, value, updated_at FROM sys_cfg").all();
@@ -204241,8 +204191,16 @@ app.get("/api/sys", async (c) => {
 });
 app.put("/api/sys", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  if (!body.key || !SYS_DEFS.some((d) => d.key === body.key)) return badRequest("\u4E0D\u652F\u6301\u7684\u914D\u7F6E\u9879");
-  await sysSet(c.env, body.key, (body.value ?? "").toString().trim());
+  const def = SYS_DEFS.find((d) => d.key === body.key);
+  if (!def || (def.hidden && def.key !== "mfa.enabled")) return badRequest("\u4E0D\u652F\u6301\u7684\u914D\u7F6E\u9879");
+  const val = (body.value ?? "").toString().trim();
+  if (def.key === "mfa.secret" && !val && await sysGet(c.env, "mfa.enabled") === "1") {
+    return badRequest("\u8BF7\u5148\u5173\u95ED\u767B\u5F55\u4E8C\u6B21\u9A8C\u8BC1\u518D\u6E05\u9664 MFA \u5BC6\u94A5");
+  }
+  if (def.key === "mfa.enabled" && val === "1" && !await sysGet(c.env, "mfa.secret")) {
+    return badRequest("\u8BF7\u5148\u751F\u6210\u5E76\u786E\u8BA4 MFA \u5BC6\u94A5");
+  }
+  await sysSet(c.env, body.key, val);
   return c.json({ ok: true });
 });
 app.delete("/api/sys/:key", async (c) => {
@@ -204353,9 +204311,15 @@ app.post("/api/cfgs", async (c) => {
   for (const [label, value] of required) {
     if (!value || !String(value).trim()) return badRequest(`${label} \u4E0D\u80FD\u4E3A\u7A7A`);
   }
-  if (!body.privateKey.includes("PRIVATE KEY")) return badRequest("\u79C1\u94A5\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u5E94\u4E3A PEM \u6587\u672C");
+  const tenancyOcid = String(body.tenancyOcid).trim();
+  const userOcid = String(body.userOcid).trim();
+  const fingerprint = String(body.fingerprint).trim();
+  const region = String(body.region).trim();
+  const privateKey = String(body.privateKey).trim();
+  const compartmentId = body.compartmentId ? String(body.compartmentId).trim() || null : null;
+  if (!privateKey.includes("PRIVATE KEY")) return badRequest("\u79C1\u94A5\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u5E94\u4E3A PEM \u6587\u672C");
   const id = randomId("cfg");
-  const ts = nowIso2();
+  const ts = nowIso();
   let status = "unknown";
   let lastError = null;
   let cfgRegions = [];
@@ -204364,17 +204328,17 @@ app.post("/api/cfgs", async (c) => {
   if (!body.skipVerify) {
     try {
       const clients = createClients({
-        tenancyOcid: body.tenancyOcid,
-        userOcid: body.userOcid,
-        fingerprint: body.fingerprint,
-        region: body.region,
-        privateKey: body.privateKey,
+        tenancyOcid,
+        userOcid,
+        fingerprint,
+        region,
+        privateKey,
         passphrase: body.passphrase,
-        compartmentId: body.compartmentId
+        compartmentId: compartmentId || void 0
       });
       await runTraced(traceFor(c), async () => {
         const [tenancy, plan] = await Promise.all([
-          clients.identity.getTenancy({ tenancyId: body.tenancyOcid }),
+          clients.identity.getTenancy({ tenancyId: tenancyOcid }),
           getPlanType(clients)
         ]);
         tenantMeta = {
@@ -204385,7 +204349,7 @@ app.post("/api/cfgs", async (c) => {
           timeCreated: await getTenancyCreatedAt(clients).catch(() => null),
           accountType: plan?.accountType ?? null
         };
-        cfgRegions = await listRegionSubscriptions(clients, body.tenancyOcid).catch(() => []);
+        cfgRegions = await listRegionSubscriptions(clients, tenancyOcid).catch(() => []);
         planType = plan?.planType ?? null;
       });
       status = "active";
@@ -204404,13 +204368,13 @@ app.post("/api/cfgs", async (c) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     id,
-    body.name.trim(),
-    body.tenancyOcid.trim(),
-    body.userOcid.trim(),
-    body.fingerprint.trim(),
-    body.region.trim(),
-    body.compartmentId?.trim() || null,
-    await encryptText(keySecret(c.env), body.privateKey.trim()),
+    String(body.name).trim(),
+    tenancyOcid,
+    userOcid,
+    fingerprint,
+    region,
+    compartmentId,
+    await encryptText(keySecret(c.env), privateKey),
     body.passphrase ? await encryptText(keySecret(c.env), body.passphrase) : null,
     body.proxy?.trim() || null,
     status,
@@ -204423,17 +204387,17 @@ app.post("/api/cfgs", async (c) => {
     ts,
     ts
   ).run();
-  const row = await getCfg2(c.env, id);
+  const row = await getCfg(c.env, id);
   return c.json({ item: row ? publicCfg(row) : null });
 });
 app.post("/api/cfgs/:id/plan-type", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const clients = await clientsFor(c.env, row);
     const plan = await runTraced(traceFor(c, row.id), () => getPlanType(clients));
     if (!plan) return badRequest("\u672A\u80FD\u83B7\u53D6\u5957\u9910\u7C7B\u578B\uFF1A\u8BE5 API Key \u53EF\u80FD\u6CA1\u6709 OSP Gateway\uFF08\u8BA2\u9605\u4FE1\u606F\uFF09\u6743\u9650");
-    await c.env.DB.prepare("UPDATE oci_cfg SET plan_type = ?, updated_at = ? WHERE id = ?").bind(plan.planType, nowIso2(), row.id).run();
+    await c.env.DB.prepare("UPDATE oci_cfg SET plan_type = ?, updated_at = ? WHERE id = ?").bind(plan.planType, nowIso(), row.id).run();
     return c.json({ planType: plan.planType, accountType: plan.accountType });
   } catch (e) {
     return Response.json({ error: errorMessage(e) }, { status: 400 });
@@ -204445,14 +204409,16 @@ app.get("/api/cfgs/:id", async (c) => {
   return c.json({ item: publicCfg(row) });
 });
 app.patch("/api/cfgs/:id", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const sets = [];
   const values = [];
   if (body.name !== void 0) {
+    const trimmedName = String(body.name ?? "").trim();
+    if (!trimmedName) return badRequest("\u914D\u7F6E\u540D\u79F0 \u4E0D\u80FD\u4E3A\u7A7A");
     sets.push("name = ?");
-    values.push(body.name.trim());
+    values.push(trimmedName);
   }
   if (body.compartmentId !== void 0) {
     sets.push("compartment_id = ?");
@@ -204473,7 +204439,7 @@ app.patch("/api/cfgs/:id", async (c) => {
   }
   if (!sets.length) return c.json({ ok: true });
   sets.push("updated_at = ?");
-  values.push(nowIso2(), row.id);
+  values.push(nowIso(), row.id);
   await c.env.DB.prepare(`UPDATE oci_cfg SET ${sets.join(", ")} WHERE id = ?`).bind(...values).run();
   return c.json({ ok: true });
 });
@@ -204487,12 +204453,12 @@ app.delete("/api/cfgs/:id", async (c) => {
 });
 var sleep = /* @__PURE__ */ __name((ms) => new Promise((r) => setTimeout(r, ms)), "sleep");
 app.post("/api/cfgs/:id/check", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const persist = /* @__PURE__ */ __name(async (status, error) => {
     await c.env.DB.prepare(
       "UPDATE oci_cfg SET status = ?, last_error = ?, last_checked_at = ?, updated_at = ? WHERE id = ?"
-    ).bind(status, error, nowIso2(), nowIso2(), row.id).run();
+    ).bind(status, error, nowIso(), nowIso(), row.id).run();
   }, "persist");
   const probe = /* @__PURE__ */ __name(() => runTraced(traceFor(c, row.id), async () => {
     const clients = await clientsFor(c.env, row);
@@ -204527,18 +204493,18 @@ app.post("/api/cfgs/:id/check", async (c) => {
       `UPDATE oci_cfg SET status = 'active', last_error = NULL, last_checked_at = ?, tenant_name = ?,
         regions = ?, tenant_meta = ?, plan_type = ?, updated_at = ? WHERE id = ?`
     ).bind(
-      nowIso2(),
+      nowIso(),
       meta.name,
       regions.length ? JSON.stringify(regions) : null,
       JSON.stringify(meta),
       plan?.planType ?? null,
-      nowIso2(),
+      nowIso(),
       row.id
     ).run();
     return c.json({
       ok: true,
       status: "active",
-      checkedAt: nowIso2(),
+      checkedAt: nowIso(),
       availabilityDomains: ads,
       tenancyName: tenancy.tenancy?.name ?? "",
       regions,
@@ -204557,14 +204523,14 @@ app.post("/api/cfgs/:id/check", async (c) => {
         kind: decryptFailed ? "auth" : cls.kind,
         status,
         retryable: cls.retryable,
-        checkedAt: nowIso2()
+        checkedAt: nowIso()
       },
       { status: fatal ? 400 : 503 }
     );
   }
 });
 app.get("/api/cfgs/:id/compartments", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const clients = await clientsFor(c.env, row, c.req.query("region") || row.region);
@@ -204575,7 +204541,7 @@ app.get("/api/cfgs/:id/compartments", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/regions", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const cached2 = parseRegions(row.regions);
   if (cached2.length && c.req.query("refresh") !== "1") {
@@ -204585,14 +204551,14 @@ app.get("/api/cfgs/:id/regions", async (c) => {
     const clients = await clientsFor(c.env, row);
     const items = await runTraced(traceFor(c, row.id), () => listRegionSubscriptions(clients, row.tenancy_ocid));
     if (!items.includes(row.region)) items.unshift(row.region);
-    await c.env.DB.prepare("UPDATE oci_cfg SET regions = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(items), nowIso2(), row.id).run();
+    await c.env.DB.prepare("UPDATE oci_cfg SET regions = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(items), nowIso(), row.id).run();
     return c.json({ items, cached: false });
   } catch (e) {
     return c.json({ items: cached2.length ? cached2 : [row.region], cached: true, error: errorMessage(e) });
   }
 });
 app.get("/api/cfgs/:id/instances", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const region = c.req.query("region") || row.region;
@@ -204609,7 +204575,7 @@ app.get("/api/cfgs/:id/instances", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/instances/:iid/action", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const action = (body.action ?? "").toUpperCase();
@@ -204624,7 +204590,7 @@ app.post("/api/cfgs/:id/instances/:iid/action", async (c) => {
   }
 });
 app.delete("/api/cfgs/:id/instances/:iid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const preserve = c.req.query("preserveBootVolume") === "1";
@@ -204638,7 +204604,7 @@ app.delete("/api/cfgs/:id/instances/:iid", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/instances/:iid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const { region, compartment } = resolveScope(c, row);
@@ -204650,7 +204616,7 @@ app.get("/api/cfgs/:id/instances/:iid", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/instances/:iid/change-ip", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const cidrs = (body.cidrList ?? []).map((x) => String(x).trim()).filter(Boolean);
@@ -204701,8 +204667,9 @@ function publicIpTask(row) {
     instanceId: row.instance_id,
     instanceName: row.instance_name ?? "",
     region: row.region,
+    compartmentId: row.compartment_id ?? "",
     ipVersion: row.ip_version ?? "ipv4",
-    cidrList: row.cidr_list ? JSON.parse(row.cidr_list) : [],
+    cidrList: parseCidrList(row.cidr_list),
     intervalSec: row.interval_sec,
     status: row.status,
     changeCount: row.attempt_count,
@@ -204726,20 +204693,14 @@ app.get("/api/ip-tasks", async (c) => {
      WHERE t.type = 'ip' ORDER BY t.created_at DESC LIMIT ? OFFSET ?`
   ).bind(pageSize, offset).all();
   return c.json({
-    items: (results ?? []).map((r) => ({
-      ...publicTask(r),
-      changeCount: r.attempt_count ?? 0,
-      dnsRecord: r.dns_record ?? "",
-      dnsZoneId: r.dns_zone_id ?? "",
-      dnsProxied: r.dns_proxied === 1
-    })),
+    items: (results ?? []).map(publicTask),
     total: totalRow?.n ?? 0,
     page,
     pageSize
   });
 });
 app.get("/api/cfgs/:id/ip-tasks", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const { results } = await c.env.DB.prepare(
     "SELECT * FROM task WHERE cfg_id = ? AND type = 'ip' ORDER BY created_at DESC"
@@ -204747,10 +204708,12 @@ app.get("/api/cfgs/:id/ip-tasks", async (c) => {
   return c.json({ items: (results ?? []).map(publicIpTask) });
 });
 app.post("/api/cfgs/:id/ip-tasks", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   if (!body.instanceId) return badRequest("\u8BF7\u9009\u62E9\u5B9E\u4F8B");
+  const { region, compartment } = resolveScope(c, row, body);
+  const compartmentId = (body.compartmentId ?? compartment ?? "").trim() || null;
   const ipVersion = body.ipVersion === "ipv6" ? "ipv6" : "ipv4";
   const cidrs = ipVersion === "ipv6" ? [] : (body.cidrList ?? []).map((x) => String(x).trim()).filter(Boolean);
   const rawInterval = body.intervalSec === void 0 || body.intervalSec === null ? 60 : Number(body.intervalSec);
@@ -204759,18 +204722,19 @@ app.post("/api/cfgs/:id/ip-tasks", async (c) => {
   const dnsRecord = (body.dnsRecord ?? "").trim();
   const dnsZoneId = (body.dnsZoneId ?? "").trim();
   const id = randomId("ipt");
-  const ts = nowIso2();
+  const ts = nowIso();
   await c.env.DB.prepare(
-    `INSERT INTO task (id, cfg_id, type, instance_id, instance_name, region, ip_version, cidr_list,
+    `INSERT INTO task (id, cfg_id, type, instance_id, instance_name, region, compartment_id, ip_version, cidr_list,
       dns_record, dns_zone_id, dns_proxied,
       interval_sec, status, attempt_count, next_run_at, created_at, updated_at)
-     VALUES (?, ?, 'ip', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`
+     VALUES (?, ?, 'ip', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`
   ).bind(
     id,
     row.id,
     body.instanceId,
     body.instanceName?.trim() || null,
-    body.region?.trim() || row.region,
+    region || row.region,
+    compartmentId,
     ipVersion,
     cidrs.length ? JSON.stringify(cidrs) : null,
     dnsRecord || null,
@@ -204795,8 +204759,8 @@ app.patch("/api/ip-tasks/:tid", async (c) => {
   } catch {
   }
   await c.env.DB.prepare(
-    "UPDATE task SET status = ?, next_run_at = ?, locked_until = NULL, updated_at = ? WHERE id = ? AND type = 'ip'"
-  ).bind(body.status, body.status === "running" ? Date.now() + intervalSec * 1e3 : 0, nowIso2(), id).run();
+    "UPDATE task SET status = ?, next_run_at = ?, updated_at = ? WHERE id = ? AND type = 'ip'"
+  ).bind(body.status, body.status === "running" ? Date.now() + intervalSec * 1e3 : 0, nowIso(), id).run();
   if (body.status === "running") safeWaitUntil(c, runIpTaskOnce(c.env, id));
   return c.json({ ok: true });
 });
@@ -204809,7 +204773,7 @@ app.post("/api/ip-tasks/:tid/run", async (c) => {
   return c.json(result);
 });
 app.post("/api/cfgs/:id/instances/:iid/change-ipv6", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
@@ -204841,7 +204805,7 @@ app.post("/api/cfgs/:id/instances/:iid/change-ipv6", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/instances/:iid/ipv6", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
@@ -204857,19 +204821,22 @@ app.post("/api/cfgs/:id/instances/:iid/ipv6", async (c) => {
   }
 });
 app.patch("/api/cfgs/:id/instances/:iid/spec", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
-  if (!body.ocpus && !body.memoryGb) return badRequest("\u8BF7\u586B\u5199 OCPU \u6216\u5185\u5B58");
+  const hasOcpus = body.ocpus !== void 0 && body.ocpus !== null && body.ocpus !== "";
+  const hasMem = body.memoryGb !== void 0 && body.memoryGb !== null && body.memoryGb !== "";
+  if (!hasOcpus && !hasMem) return badRequest("\u8BF7\u586B\u5199 OCPU \u6216\u5185\u5B58");
+  const ocpus = hasOcpus ? parseFiniteNum(body.ocpus, NaN) : void 0;
+  const memoryGb = hasMem ? parseFiniteNum(body.memoryGb, NaN) : void 0;
+  if (ocpus !== void 0 && (!Number.isFinite(ocpus) || ocpus <= 0)) return badRequest("OCPU \u53C2\u6570\u4E0D\u5408\u6CD5");
+  if (memoryGb !== void 0 && (!Number.isFinite(memoryGb) || memoryGb <= 0)) return badRequest("\u5185\u5B58\u53C2\u6570\u4E0D\u5408\u6CD5");
   try {
     const { region, compartment } = resolveScope(c, row, body);
     const clients = await clientsFor(c.env, row, region, compartment);
     await runTraced(
       traceFor(c, row.id),
-      () => updateInstanceSpec(clients, c.req.param("iid"), {
-        ocpus: body.ocpus ? Number(body.ocpus) : void 0,
-        memoryGb: body.memoryGb ? Number(body.memoryGb) : void 0
-      })
+      () => updateInstanceSpec(clients, c.req.param("iid"), { ocpus, memoryGb })
     );
     return c.json({ ok: true });
   } catch (e) {
@@ -204888,7 +204855,7 @@ async function syncDnsRecord(env, record, ip, opts = {}) {
 }
 __name(syncDnsRecord, "syncDnsRecord");
 app.post("/api/cfgs/:id/instances/:iid/dns", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const record = (body.record ?? "").trim();
@@ -204897,7 +204864,7 @@ app.post("/api/cfgs/:id/instances/:iid/dns", async (c) => {
     const { region, compartment } = resolveScope(c, row, body);
     const clients = await clientsFor(c.env, row, region, compartment);
     const ips = await runTraced(traceFor(c, row.id), () => getInstanceIps(clients, c.req.param("iid")));
-    const ip = ips.publicIps[0];
+    const ip = ips.publicIps[0] || ips.ipv6Addresses[0];
     if (!ip) return badRequest("\u5B9E\u4F8B\u6CA1\u6709\u516C\u7F51 IP\uFF0C\u65E0\u6CD5\u540C\u6B65 DNS");
     const result = await syncDnsRecord(c.env, record, ip, {
       zoneId: body.zoneId,
@@ -204999,7 +204966,7 @@ app.delete("/api/cf/zones/:zid/records/:rid", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/traffic/data", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const interval = ["1m", "60m", "1440m"].includes(body.interval || "") ? body.interval : "60m";
@@ -205023,7 +204990,7 @@ app.post("/api/cfgs/:id/traffic/data", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/traffic/summary", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const now = /* @__PURE__ */ new Date();
@@ -205044,7 +205011,7 @@ app.post("/api/cfgs/:id/traffic/summary", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/cost", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const now = /* @__PURE__ */ new Date();
@@ -205069,7 +205036,7 @@ app.post("/api/cfgs/:id/cost", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/limits", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const region = c.req.query("region") || row.region;
   const service = (c.req.query("service") || "").trim();
@@ -205111,7 +205078,7 @@ app.get("/api/cfgs/:id/limits", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/tenant", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const clients = await clientsFor(c.env, row);
@@ -205122,7 +205089,7 @@ app.get("/api/cfgs/:id/tenant", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/iam/users", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const name = (body.name ?? "").trim();
@@ -205146,7 +205113,7 @@ app.post("/api/cfgs/:id/iam/users", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/iam/settings", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const clients = await clientsFor(c.env, row);
@@ -205160,7 +205127,7 @@ app.get("/api/cfgs/:id/iam/settings", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/iam/settings/password-expiry", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const days = Number(body.days);
@@ -205174,7 +205141,7 @@ app.post("/api/cfgs/:id/iam/settings/password-expiry", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/iam/settings/notification-recipients", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const recipients = (body.recipients ?? []).map((x) => String(x).trim()).filter(Boolean);
@@ -205189,7 +205156,7 @@ app.post("/api/cfgs/:id/iam/settings/notification-recipients", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/iam/users/:uid/action", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const userId = c.req.param("uid");
   const body = await c.req.json().catch(() => ({}));
@@ -205227,7 +205194,7 @@ app.post("/api/cfgs/:id/iam/users/:uid/action", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/instance-ips/:iid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const { region, compartment } = resolveScope(c, row);
@@ -205238,7 +205205,7 @@ app.get("/api/cfgs/:id/instance-ips/:iid", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/shapes", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const region = c.req.query("region") || row.region;
   const ad = c.req.query("ad") || "";
@@ -205256,7 +205223,7 @@ app.get("/api/cfgs/:id/shapes", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/launch-options", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const shape = shapeOf(c.req.query("shape") ?? "ARM");
   const filter = osFilter(c.req.query("os"));
@@ -205284,7 +205251,7 @@ app.get("/api/cfgs/:id/launch-options", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/availability-domains", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const region = c.req.query("region") || row.region;
   try {
@@ -205296,11 +205263,12 @@ app.get("/api/cfgs/:id/availability-domains", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/batch-launch", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const arch = (body.arch ?? "").trim().toUpperCase();
   if (!["ARM", "AMD"].includes(arch)) return badRequest("\u53EA\u80FD\u9009\u62E9\u514D\u8D39\u7684 ARM (A1.Flex) \u6216 AMD (E2.1.Micro)");
+  const startedAt = nowIso();
   try {
     const { region, compartment } = resolveScope(c, row, body);
     const clients = await clientsFor(c.env, row, region, compartment);
@@ -205318,22 +205286,29 @@ app.post("/api/cfgs/:id/batch-launch", async (c) => {
         sshPublicKey: body.sshPublicKey
       })
     );
-    for (const [i, it] of result.items.entries()) {
-      await notifyLaunchSuccess(c.env, {
-        task: it.name,
-        region,
-        ad: body.availabilityDomain || "",
-        shape: result.shape,
-        ocpus: arch === "ARM" ? Number(body.ocpus ?? 1) : 1,
-        memoryGb: arch === "ARM" ? Number(body.memoryGb ?? 6) : 1,
-        bootVolumeGb: 50,
-        instanceId: it.id,
-        cfgName: row.name,
-        instanceName: it.name,
-        count: i + 1,
-        createdAt: row.created_at,
-        accountType: row.plan_type
-      });
+    if (result.items.length) {
+      safeWaitUntil(
+        c,
+        Promise.allSettled(
+          result.items.map((it, i) =>
+            notifyLaunchSuccess(c.env, {
+              task: it.name,
+              region,
+              ad: result.availabilityDomain || body.availabilityDomain || "",
+              shape: result.shape,
+              ocpus: result.ocpus,
+              memoryGb: result.memoryGb,
+              bootVolumeGb: 50,
+              instanceId: it.id,
+              cfgName: row.name,
+              instanceName: it.name,
+              count: i + 1,
+              createdAt: startedAt,
+              accountType: row.plan_type
+            })
+          )
+        )
+      );
     }
     return c.json(result);
   } catch (e) {
@@ -205341,7 +205316,7 @@ app.post("/api/cfgs/:id/batch-launch", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/network", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const cidrRe = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
@@ -205360,7 +205335,7 @@ app.post("/api/cfgs/:id/network", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/boot-volumes", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const { region, compartment } = resolveScope(c, row);
@@ -205375,14 +205350,20 @@ app.get("/api/cfgs/:id/boot-volumes", async (c) => {
   }
 });
 app.patch("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
+  const hasSize = body.sizeInGBs !== void 0 && body.sizeInGBs !== null && body.sizeInGBs !== "";
+  const hasVpus = body.vpusPerGB !== void 0 && body.vpusPerGB !== null && body.vpusPerGB !== "";
+  const rawSize = hasSize ? parseFiniteNum(body.sizeInGBs, NaN) : void 0;
+  const rawVpus = hasVpus ? parseFiniteNum(body.vpusPerGB, NaN) : void 0;
+  if (rawSize !== void 0 && (!Number.isFinite(rawSize) || rawSize <= 0)) return badRequest("\u5F15\u5BFC\u5377\u5927\u5C0F\u4E0D\u5408\u6CD5");
+  if (rawVpus !== void 0 && !Number.isFinite(rawVpus)) return badRequest("VPU \u53C2\u6570\u4E0D\u5408\u6CD5");
   try {
     const { region, compartment } = resolveScope(c, row, body);
     const clients = await clientsFor(c.env, row, region, compartment);
-    const size = body.sizeInGBs ? Math.max(Number(body.sizeInGBs), 1) : void 0;
-    const vpus = body.vpusPerGB !== void 0 ? Math.min(Math.max(Number(body.vpusPerGB), 0), 120) : void 0;
+    const size = rawSize !== void 0 ? rawSize : void 0;
+    const vpus = rawVpus !== void 0 ? Math.min(Math.max(rawVpus, 0), 120) : void 0;
     await runTraced(
       traceFor(c, row.id),
       () => updateBootVolume(clients, c.req.param("bid"), { sizeInGBs: size, vpusPerGB: vpus })
@@ -205393,7 +205374,7 @@ app.patch("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
   }
 });
 app.delete("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
@@ -205406,7 +205387,7 @@ app.delete("/api/cfgs/:id/boot-volumes/:bid", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/network", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const { region, compartment } = resolveScope(c, row);
@@ -205418,7 +205399,7 @@ app.get("/api/cfgs/:id/network", async (c) => {
   }
 });
 app.get("/api/cfgs/:id/security-lists/:sid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   try {
     const { region, compartment } = resolveScope(c, row);
@@ -205433,7 +205414,7 @@ app.get("/api/cfgs/:id/security-lists/:sid", async (c) => {
   }
 });
 app.post("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const direction = body.direction === "egress" ? "egress" : "ingress";
@@ -205467,7 +205448,7 @@ app.post("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
   }
 });
 app.delete("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   const index = Number(c.req.query("index"));
@@ -205486,7 +205467,7 @@ app.delete("/api/cfgs/:id/security-lists/:sid/rules", async (c) => {
   }
 });
 app.delete("/api/cfgs/:id/subnets/:sid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
@@ -205499,7 +205480,7 @@ app.delete("/api/cfgs/:id/subnets/:sid", async (c) => {
   }
 });
 app.delete("/api/cfgs/:id/vcns/:vid", async (c) => {
-  const row = await getCfg2(c.env, c.req.param("id"));
+  const row = await getCfg(c.env, c.req.param("id"));
   if (!row) return Response.json({ error: "\u914D\u7F6E\u4E0D\u5B58\u5728" }, { status: 404 });
   const body = await c.req.json().catch(() => ({}));
   try {
@@ -205554,7 +205535,11 @@ function publicTask(row) {
     instanceId: row.instance_id,
     instanceName: row.instance_name,
     ipVersion: row.ip_version ?? "ipv4",
-    cidrList: row.cidr_list ? JSON.parse(row.cidr_list) : [],
+    cidrList: parseCidrList(row.cidr_list),
+    changeCount: row.attempt_count ?? 0,
+    dnsRecord: row.dns_record ?? "",
+    dnsZoneId: row.dns_zone_id ?? "",
+    dnsProxied: row.dns_proxied === 1,
     lastIp: row.last_ip,
     lastMessage: row.last_message,
     lastError: row.last_error,
@@ -205598,7 +205583,7 @@ __name(parseFiniteNum, "parseFiniteNum");
 app.post("/api/tasks", async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.cfgId) return badRequest("\u8BF7\u9009\u62E9 OCI \u914D\u7F6E");
-  const cfg = await getCfg2(c.env, body.cfgId);
+  const cfg = await getCfg(c.env, body.cfgId);
   if (!cfg) return badRequest("OCI \u914D\u7F6E\u4E0D\u5B58\u5728");
   const rawTarget = parseFiniteNum(body.targetCount, 1);
   const rawInterval = parseFiniteNum(body.intervalSec, 60);
@@ -205626,7 +205611,7 @@ app.post("/api/tasks", async (c) => {
   const shape = shapeOf(body.shape ?? "ARM");
   const os = osFilter(body.osName);
   const id = randomId("task");
-  const ts = nowIso2();
+  const ts = nowIso();
   await c.env.DB.prepare(
     `INSERT INTO task (id, cfg_id, type, name, region, compartment_id, availability_domain, shape, ocpus, memory_gb,
       boot_volume_gb, os_name, os_version, image_id, subnet_id, root_password, ssh_public_key,
@@ -205678,7 +205663,7 @@ app.patch("/api/tasks/:id", async (c) => {
     values.push(body.name.trim() || task.name);
   }
   if (body.status && ["running", "paused", "failed", "completed"].includes(body.status)) {
-    sets.push("status = ?", "next_run_at = ?", "locked_until = NULL");
+    sets.push("status = ?", "next_run_at = ?");
     values.push(body.status, body.status === "running" ? Date.now() : task.next_run_at);
   }
   if (body.targetCount !== void 0) {
@@ -205759,7 +205744,7 @@ app.patch("/api/tasks/:id", async (c) => {
   }
   if (!sets.length) return c.json({ ok: true });
   sets.push("updated_at = ?");
-  values.push(nowIso2(), id);
+  values.push(nowIso(), id);
   await c.env.DB.prepare(`UPDATE task SET ${sets.join(", ")} WHERE id = ?`).bind(...values).run();
   await publishEntry(c.env, {
     level: "info",
@@ -205779,7 +205764,7 @@ app.delete("/api/tasks/:id", async (c) => {
   return c.json({ ok: true });
 });
 app.post("/api/tasks/:id/run", async (c) => {
-  const result = await runTaskOnce(c.env, c.req.param("id"));
+  const result = await runTaskOnce(c.env, c.req.param("id"), { force: true });
   return c.json(result);
 });
 registerTgBot(app, {
@@ -205797,19 +205782,12 @@ app.onError((err, c) => {
 async function cleanupTempData(env) {
   const now = Date.now();
   const keepMs = 7 * 24 * 60 * 60 * 1e3;
+  const cutoffIso = new Date(now - keepMs).toISOString();
   try {
-    const rows = await env.DB.prepare("SELECT key, value FROM sys_cfg WHERE key LIKE ?").bind(VNC_SESSION_PREFIX2 + "%").all();
-    for (const row of rows.results ?? []) {
-      let shouldRemove = false;
-      try {
-        const session = JSON.parse(await decryptText(keySecretsForRead(env), row.value));
-        shouldRemove = session.expiresAt + keepMs <= now;
-      } catch {
-        shouldRemove = true;
-      }
-      if (!shouldRemove) continue;
-      await env.DB.prepare("DELETE FROM sys_cfg WHERE key = ?").bind(row.key).run();
-    }
+    // 按 updated_at 清理超期 VNC 会话，避免反复解密或在临时缺少密钥时误删
+    await env.DB.prepare(
+      "DELETE FROM sys_cfg WHERE key LIKE 'vnc.session:%' AND updated_at < ?"
+    ).bind(cutoffIso).run();
   } catch {
   }
   try {
@@ -205821,7 +205799,7 @@ async function cleanupTempData(env) {
   try {
     await env.DB.prepare(
       "DELETE FROM sys_cfg WHERE key LIKE 'tg.imap:%' AND updated_at < ?"
-    ).bind(new Date(now - keepMs).toISOString()).run();
+    ).bind(cutoffIso).run();
   } catch {
   }
 }
@@ -205829,9 +205807,15 @@ __name(cleanupTempData, "cleanupTempData");
 var index_default = {
   fetch: app.fetch,
   async scheduled(_event, env, ctx) {
+    if (!env?.KEY_SECRET) return;
     const work = (async () => {
       await ensureSchema(env);
-      await Promise.allSettled([executeDueTasks(env), runDueIpTasks(env), cleanupTempData(env)]);
+      const jobs = [executeDueTasks(env), runDueIpTasks(env)];
+      // 生产 Cron 每小时整点执行一次临时数据清理，避免每分钟全表扫描
+      if (!_event?.scheduledTime || Math.floor(_event.scheduledTime / 6e4) % 60 === 0) {
+        jobs.push(cleanupTempData(env));
+      }
+      await Promise.allSettled(jobs);
     })();
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(work);

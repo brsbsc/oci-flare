@@ -1720,6 +1720,9 @@ function createInMemoryD1(initialRows = []) {
             const existed = rows.delete(args[0]);
             return { meta: { changes: existed ? 1 : 0 } };
           }
+          if (sql.includes("DELETE FROM sys_cfg WHERE key LIKE 'vnc.session:%'")) {
+            return { meta: { changes: 0 } };
+          }
           if (sql.includes("DELETE FROM sys_cfg WHERE key LIKE 'google.used:%'")) {
             return { meta: { changes: 0 } };
           }
@@ -1837,90 +1840,143 @@ test("Real Worker dist/index.js Hono routing: /api/tg/webhook public auth, /api/
   const { token } = await loginRes.json();
   assert.ok(token);
 
-  // 4. Write encrypted tg.webhook_secret & tg.webhook_url via PUT /api/sys
-  const putSecretRes = await worker.fetch(
+  // 4. PUT /api/sys must reject direct tampering with hidden tg.webhook_* keys;
+  //    registering via POST /api/tg/webhook-config encrypts & persists them properly.
+  const blockedSecretPut = await worker.fetch(
     new Request("https://example.workers.dev/api/sys", {
       method: "PUT",
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ key: "tg.webhook_secret", value: "real-webhook-secret-xyz" }),
+      body: JSON.stringify({ key: "tg.webhook_secret", value: "tampered-secret" }),
     }),
     env,
     ctx
   );
-  assert.equal(putSecretRes.status, 200);
-  const putUrlRes = await worker.fetch(
+  assert.equal(blockedSecretPut.status, 400);
+  const blockedUrlPut = await worker.fetch(
     new Request("https://example.workers.dev/api/sys", {
       method: "PUT",
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ key: "tg.webhook_url", value: "https://example.workers.dev/api/tg/webhook" }),
+      body: JSON.stringify({ key: "tg.webhook_url", value: "https://evil.example/hook" }),
     }),
     env,
     ctx
   );
-  assert.equal(putUrlRes.status, 200);
+  assert.equal(blockedUrlPut.status, 400);
 
-  // 4b. POST /api/tg/webhook with valid X-Telegram-Bot-Api-Secret-Token succeeds without Bearer token
-  const authWebhookRes = await worker.fetch(
-    new Request("https://example.workers.dev/api/tg/webhook", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-telegram-bot-api-secret-token": "real-webhook-secret-xyz",
-      },
-      body: JSON.stringify({ update_id: 2 }),
-    }),
-    env,
-    ctx
-  );
-  assert.equal(authWebhookRes.status, 200);
-  assert.deepEqual(await authWebhookRes.json(), { ok: true });
-
-  // 4c. Authenticated GET /api/tg/webhook-config returns webhookUrl without Bearer rejection
-  const authCfgRes = await worker.fetch(
-    new Request("https://example.workers.dev/api/tg/webhook-config", {
-      headers: { authorization: `Bearer ${token}` },
-    }),
-    env,
-    ctx
-  );
-  assert.equal(authCfgRes.status, 200);
-  const authCfgJson = await authCfgRes.json();
-  assert.equal(authCfgJson.webhookUrl, "https://example.workers.dev/api/tg/webhook");
-
-  // 4d. GET /api/sys must NOT expose hidden tg.webhook_secret or tg.webhook_url in items
-  const sysRes = await worker.fetch(
+  await worker.fetch(
     new Request("https://example.workers.dev/api/sys", {
-      headers: { authorization: `Bearer ${token}` },
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ key: "notify.tg_bot_token", value: "123:TEST_BOT_TOKEN" }),
     }),
     env,
     ctx
   );
-  assert.equal(sysRes.status, 200);
-  const sysData = await sysRes.json();
-  const keys = (sysData.items || []).map((i) => i.key);
-  assert.equal(keys.includes("tg.webhook_secret"), false);
-  assert.equal(keys.includes("tg.webhook_url"), false);
+  await worker.fetch(
+    new Request("https://example.workers.dev/api/sys", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ key: "notify.tg_chat_id", value: "10001" }),
+    }),
+    env,
+    ctx
+  );
 
-  // 5. Authenticated DELETE /api/tg/webhook-config must hit tg-bot.js (NOT swallowed by DELETE /api/sys/:key)
-  const delRes = await worker.fetch(
-    new Request("https://example.workers.dev/api/tg/webhook-config", {
-      method: "DELETE",
-      headers: { authorization: `Bearer ${token}` },
-    }),
-    env,
-    ctx
-  );
-  assert.equal(delRes.status, 200);
-  const delJson = await delRes.json();
-  assert.deepEqual(delJson, { ok: true, enabled: false, webhookUrl: "" });
-  assert.equal(db.rows.get("tg.webhook_secret")?.value, null);
-  assert.equal(db.rows.get("tg.webhook_url")?.value, null);
+  // Register via official /api/tg/webhook-config (mock Telegram API) and capture generated secret
+  let registeredSecret = "";
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const urlStr = typeof input === "string" ? input : input.url;
+    if (urlStr.includes("/setWebhook")) {
+      registeredSecret = JSON.parse(init?.body || "{}").secret_token || "";
+      return Response.json({ ok: true, result: true });
+    }
+    if (urlStr.includes("/setMyCommands") || urlStr.includes("/deleteWebhook")) {
+      return Response.json({ ok: true, result: true });
+    }
+    if (urlStr.includes("/getWebhookInfo")) {
+      return Response.json({ ok: true, result: { url: "https://example.workers.dev/api/tg/webhook", pending_update_count: 0 } });
+    }
+    return Response.json({ ok: true, result: true });
+  };
+  try {
+    const regRes = await worker.fetch(
+      new Request("https://example.workers.dev/api/tg/webhook-config", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ origin: "https://example.workers.dev" }),
+      }),
+      env,
+      ctx
+    );
+    assert.equal(regRes.status, 200);
+    assert.ok(registeredSecret.length >= 32);
+
+    // 4b. POST /api/tg/webhook with valid X-Telegram-Bot-Api-Secret-Token succeeds without Bearer token
+    const authWebhookRes = await worker.fetch(
+      new Request("https://example.workers.dev/api/tg/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": registeredSecret,
+        },
+        body: JSON.stringify({ update_id: 2 }),
+      }),
+      env,
+      ctx
+    );
+    assert.equal(authWebhookRes.status, 200);
+    assert.deepEqual(await authWebhookRes.json(), { ok: true });
+
+    // 4c. Authenticated GET /api/tg/webhook-config returns webhookUrl without Bearer rejection
+    const authCfgRes = await worker.fetch(
+      new Request("https://example.workers.dev/api/tg/webhook-config", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      env,
+      ctx
+    );
+    assert.equal(authCfgRes.status, 200);
+    const authCfgJson = await authCfgRes.json();
+    assert.equal(authCfgJson.webhookUrl, "https://example.workers.dev/api/tg/webhook");
+
+    // 4d. GET /api/sys must NOT expose hidden tg.webhook_secret or tg.webhook_url in items
+    const sysRes = await worker.fetch(
+      new Request("https://example.workers.dev/api/sys", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      env,
+      ctx
+    );
+    assert.equal(sysRes.status, 200);
+    const sysData = await sysRes.json();
+    const keys = (sysData.items || []).map((i) => i.key);
+    assert.equal(keys.includes("tg.webhook_secret"), false);
+    assert.equal(keys.includes("tg.webhook_url"), false);
+
+    // 5. Authenticated DELETE /api/tg/webhook-config must hit tg-bot.js (NOT swallowed by DELETE /api/sys/:key)
+    const delRes = await worker.fetch(
+      new Request("https://example.workers.dev/api/tg/webhook-config", {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      env,
+      ctx
+    );
+    assert.equal(delRes.status, 200);
+    const delJson = await delRes.json();
+    assert.deepEqual(delJson, { ok: true, enabled: false, webhookUrl: "" });
+    assert.equal(db.rows.get("tg.webhook_secret")?.value, null);
+    assert.equal(db.rows.get("tg.webhook_url")?.value, null);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 
   // 6. cleanupTempData via worker.scheduled deletes tg.imap:* older than 7 days and keeps fresh rows
   const now = Date.now();
@@ -2335,5 +2391,111 @@ test("review fixes: redact bot token on network error, overview error reporting,
     assert.equal(res.status, 200);
     await Promise.all(pending);
     assert.equal(chatIdReads, 1);
+  }
+});
+
+test("audit fixes: callback query errors recover from loading state with home button, and >100 items paginate accurately", async () => {
+  // 1) Unexpected throw after showLoading must recover UI instead of staying stuck on ⏳
+  {
+    const baseDeps = createMockDeps({ "notify.tg_bot_token": "99:SEC_TOK", "notify.tg_chat_id": "10001" });
+    const deps = {
+      ...baseDeps,
+      async sysSet() {
+        throw new Error("D1 write exploded /bot99:SEC_TOK/send");
+      },
+    };
+    const app = createMockRouter();
+    app.get("/api/cfgs/:id", (c) => c.json({ item: { id: "cfg_1", name: "n1", region: "ap-tokyo-1" } }));
+    app.get("/api/cfgs/:id/instances", (c) =>
+      c.json({ region: "ap-tokyo-1", items: [{ id: "ocid1.instance.oc1..a", displayName: "vm1", state: "RUNNING" }] })
+    );
+    const edits = [];
+    const tgFetch = async (url, init) => {
+      if (url.endsWith("/editMessageText")) edits.push(JSON.parse(init.body));
+      return Response.json({ ok: true, result: true });
+    };
+    await handleTelegramUpdate(
+      { update_id: 991, callback_query: { id: "cq_err", from: { is_bot: false }, message: { chat: { id: 10001 }, message_id: 42 }, data: "c:ins:cfg_1:1" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.equal(edits.length, 2, "must edit once for loading and once for error recovery");
+    assert.match(edits[0].text, /正在拉取实例列表/);
+    assert.match(edits[1].text, /操作执行异常/);
+    assert.equal(edits[1].text.includes("99:SEC_TOK"), false, "error recovery must redact bot token");
+    assert.ok(edits[1].reply_markup.inline_keyboard.flat().some((b) => b.callback_data === "m:home"));
+  }
+
+  // 2) >100 configs and launch tasks paginate accurately, and fetchSingleTask stops early once matched
+  {
+    const allCfgs = Array.from({ length: 125 }, (_, i) => ({
+      id: `cfg_${i + 1}`,
+      name: `c${i + 1}`,
+      status: i < 110 ? "active" : "invalid",
+    }));
+    const allTasks = Array.from({ length: 125 }, (_, i) => ({
+      id: `task_${i + 1}`,
+      name: `t${i + 1}`,
+      status: i < 105 ? "running" : "paused",
+      region: "ap-tokyo-1",
+    }));
+    let taskPageCalls = 0;
+    const app = createMockRouter();
+    app.get("/api/cfgs", (c) => {
+      const page = Number(new URL(c.req.url).searchParams.get("page") || 1);
+      const pageSize = Number(new URL(c.req.url).searchParams.get("pageSize") || 100);
+      return c.json({ items: allCfgs.slice((page - 1) * pageSize, page * pageSize), total: allCfgs.length });
+    });
+    app.get("/api/tasks", (c) => {
+      taskPageCalls++;
+      const page = Number(new URL(c.req.url).searchParams.get("page") || 1);
+      const pageSize = Number(new URL(c.req.url).searchParams.get("pageSize") || 100);
+      return c.json({ items: allTasks.slice((page - 1) * pageSize, page * pageSize), total: allTasks.length });
+    });
+    app.get("/api/ip-tasks", (c) => c.json({ items: [], total: 0 }));
+
+    const deps = createMockDeps({ "notify.tg_bot_token": "tk", "notify.tg_chat_id": "10001" });
+    const sent = [];
+    const tgFetch = async (url, init) => {
+      if (url.endsWith("/sendMessage") || url.endsWith("/editMessageText")) sent.push(JSON.parse(init.body));
+      return Response.json({ ok: true, result: { message_id: 1 } });
+    };
+
+    await handleTelegramUpdate(
+      { update_id: 992, message: { chat: { id: 10001 }, from: { is_bot: false }, text: "/status" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.match(sent[0].text, /125 个（有效 110 · 失效 15）/);
+    assert.match(sent[0].text, /125 个（运行中 105）/);
+
+    // Early-stop check: task_1 is on page 1 -> must NOT fetch page 2
+    taskPageCalls = 0;
+    await handleTelegramUpdate(
+      { update_id: 993, callback_query: { id: "cq_1", from: { is_bot: false }, message: { chat: { id: 10001 }, message_id: 49 }, data: "t:v:l:task_1" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.equal(taskPageCalls, 1, "fetchSingleTask must stop on page 1 when task_1 is already found");
+    assert.match(sent[1].text, /t1/);
+
+    await handleTelegramUpdate(
+      { update_id: 994, callback_query: { id: "cq_125", from: { is_bot: false }, message: { chat: { id: 10001 }, message_id: 50 }, data: "t:v:l:task_125" } },
+      {},
+      null,
+      app,
+      deps,
+      tgFetch
+    );
+    assert.match(sent[2].text, /t125/);
   }
 });

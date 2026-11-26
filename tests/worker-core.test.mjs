@@ -229,6 +229,20 @@ function createMemoryD1(opts = {}) {
         }
 
         // sys_cfg mutations
+        if (
+          sql.includes("INSERT INTO sys_cfg") &&
+          sql.includes("VALUES ('mfa.last_step', ?, ?)") &&
+          sql.includes("COALESCE(CAST(sys_cfg.value AS INTEGER), 0) < CAST(excluded.value AS INTEGER)")
+        ) {
+          const [value, updated_at] = args;
+          const prev = sysCfg.get("mfa.last_step");
+          const prevNum = prev?.value == null ? 0 : Number(prev.value);
+          if (!prev || prevNum < Number(value)) {
+            sysCfg.set("mfa.last_step", { key: "mfa.last_step", value, updated_at });
+            return { meta: { changes: 1 } };
+          }
+          return { meta: { changes: 0 } };
+        }
         if (sql.includes("INSERT INTO sys_cfg") && sql.includes("ON CONFLICT(key) DO UPDATE")) {
           const [key, value, updated_at] = args;
           sysCfg.set(key, { key, value, updated_at });
@@ -251,6 +265,17 @@ function createMemoryD1(opts = {}) {
         if (sql === "DELETE FROM sys_cfg WHERE key = ?") {
           const deleted = sysCfg.delete(args[0]);
           return { meta: { changes: deleted ? 1 : 0 } };
+        }
+        if (sql.startsWith("DELETE FROM sys_cfg WHERE key LIKE 'vnc.session:%'")) {
+          const cutoff = String(args[0] ?? "");
+          let changes = 0;
+          for (const [k, v] of sysCfg.entries()) {
+            if (k.startsWith("vnc.session:") && String(v.updated_at || "") < cutoff) {
+              sysCfg.delete(k);
+              changes++;
+            }
+          }
+          return { meta: { changes } };
         }
         if (sql.startsWith("DELETE FROM sys_cfg WHERE key LIKE 'google.used:%'")) {
           const now = Number(args[0] ?? 0);
@@ -322,6 +347,12 @@ function createMemoryD1(opts = {}) {
             const [id, now] = whereArgs;
             const candidate = store.get(id);
             if (candidate && (candidate.locked_until == null || candidate.locked_until < now)) {
+              row = candidate;
+            }
+          } else if (wherePart === "id = ? AND locked_until = ?") {
+            const [id, expectedLock] = whereArgs;
+            const candidate = store.get(id);
+            if (candidate && candidate.locked_until === expectedLock) {
               row = candidate;
             }
           } else if (wherePart === "id = ? AND type = 'ip'") {
@@ -2231,4 +2262,691 @@ test("#15 Google OAuth refreshes JWKS on kid miss, #18 SettingsView tgWebhookReq
     }
   );
 });
+
+// ============================================================================
+// 10) 全仓审计回归 A：Google 登录限流/静音/原子防重放、TOTP 并发防重放与 /api/logout 吊销
+// ============================================================================
+test("audit A: /api/google/login rate-limits, stays silent when disabled, blocks concurrent replay; TOTP atomic replay & /api/logout revoke", async (t) => {
+  const db = createMemoryD1();
+  const env = createTestEnv(db);
+  const { ctx } = createExecCtx();
+  const token = await loginAndGetToken(env, ctx);
+  const authHeader = { authorization: `Bearer ${token}` };
+
+  // Seed TG bot so any unintended alert would be captured
+  await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "notify.tg_bot_token", value: "123456:TEST_BOT_TOKEN" },
+  });
+  await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "notify.tg_chat_id", value: "998877" },
+  });
+
+  const tgAlerts = [];
+  const keyPair = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"]
+  );
+  const jwk = { ...(await crypto.subtle.exportKey("jwk", keyPair.publicKey)), kid: "audit-kid-1" };
+  const b64url = (input) =>
+    Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  async function signJwt(email) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT", kid: "audit-kid-1" }));
+    const payload = b64url(
+      JSON.stringify({
+        iss: "https://accounts.google.com",
+        aud: "audit-client.apps.googleusercontent.com",
+        email,
+        email_verified: true,
+        sub: `sub_${email}`,
+        iat: nowSec - 5,
+        exp: nowSec + 300,
+      })
+    );
+    const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", keyPair.privateKey, new TextEncoder().encode(`${header}.${payload}`));
+    return `${header}.${payload}.${b64url(Buffer.from(sig))}`;
+  }
+
+  await withMockFetch(
+    async (input, init) => {
+      const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("api.telegram.org/")) {
+        tgAlerts.push(JSON.parse(init?.body || "{}").text || "");
+        return jsonResponse({ ok: true, result: { message_id: tgAlerts.length } });
+      }
+      if (urlStr === "https://www.googleapis.com/oauth2/v3/certs") {
+        return jsonResponse({ keys: [jwk] });
+      }
+      return jsonResponse({});
+    },
+    async () => {
+      // 1) Disabled Google login must NOT emit TG alerts
+      for (let i = 0; i < 4; i++) {
+        const res = await apiJson(env, ctx, "/api/google/login", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "198.51.100.11" },
+          body: { credential: "fake.token.val" },
+        });
+        assert.equal(res.status, 400);
+      }
+      assert.equal(tgAlerts.length, 0, "disabled /api/google/login must not spam Telegram");
+
+      // 2) Enable Google login: cap TG failure alerts at 3 & enforce 429 on 6th attempt
+      await apiJson(env, ctx, "/api/sys/google", {
+        method: "PUT",
+        headers: authHeader,
+        body: {
+          enabled: true,
+          clientId: "audit-client.apps.googleusercontent.com",
+          allowedEmails: "owner@example.com",
+        },
+      });
+      const intruderJwt = await signJwt("evil@example.com");
+      for (let i = 0; i < 5; i++) {
+        const r = await apiJson(env, ctx, "/api/google/login", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "198.51.100.12" },
+          body: { credential: intruderJwt },
+        });
+        assert.equal(r.status, 400);
+      }
+      assert.equal(tgAlerts.length, 3, "Google login failures must cap TG alerts at 3 per IP/min");
+      const throttled = await apiJson(env, ctx, "/api/google/login", {
+        method: "POST",
+        headers: { "cf-connecting-ip": "198.51.100.12" },
+        body: { credential: intruderJwt },
+      });
+      assert.equal(throttled.status, 429);
+
+      // 3) Concurrent replay of the same valid Google ID token: exactly 1 succeeds
+      const ownerJwt = await signJwt("owner@example.com");
+      const [g1, g2] = await Promise.all([
+        apiJson(env, ctx, "/api/google/login", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "198.51.100.13" },
+          body: { credential: ownerJwt },
+        }),
+        apiJson(env, ctx, "/api/google/login", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "198.51.100.14" },
+          body: { credential: ownerJwt },
+        }),
+      ]);
+      const statuses = [g1.status, g2.status].sort((a, b) => a - b);
+      assert.deepEqual(statuses, [200, 401], "concurrent Google ID token replay must allow only one login");
+
+      // 4) /api/logout immediately revokes session token
+      const activeTok = g1.status === 200 ? g1.data.token : g2.data.token;
+      const beforeLogout = await apiJson(env, ctx, "/api/meta", {
+        headers: { authorization: `Bearer ${activeTok}` },
+      });
+      assert.equal(beforeLogout.status, 200);
+      const logoutRes = await apiJson(env, ctx, "/api/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${activeTok}` },
+      });
+      assert.equal(logoutRes.status, 200);
+      const afterLogout = await apiJson(env, ctx, "/api/meta", {
+        headers: { authorization: `Bearer ${activeTok}` },
+      });
+      assert.equal(afterLogout.status, 401, "token must be rejected immediately after /api/logout");
+
+      // 5) Concurrent same-step TOTP login (starting from a dirty NULL mfa.last_step): exactly 1 succeeds
+      db.sysCfg.set("mfa.last_step", { key: "mfa.last_step", value: null, updated_at: "2026-11-25T00:00:00Z" });
+      const freshTok = await loginAndGetToken(env, ctx);
+      const freshAuth = { authorization: `Bearer ${freshTok}` };
+      let fakeNow = 1764060015000;
+      t.mock.method(Date, "now", () => fakeNow);
+      await apiJson(env, ctx, "/api/sys", {
+        method: "PUT",
+        headers: freshAuth,
+        body: { key: "mfa.secret", value: "JBSWY3DPEHPK3PXP" },
+      });
+      await apiJson(env, ctx, "/api/sys/mfa", {
+        method: "POST",
+        headers: freshAuth,
+        body: { enabled: true },
+      });
+      const codeRes = await apiJson(env, ctx, "/api/sys/totp", { method: "POST", headers: freshAuth });
+      const [m1, m2] = await Promise.all([
+        apiJson(env, ctx, "/api/login", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "198.51.100.21" },
+          body: { password: env.AUTH_PASSWORD, code: codeRes.data.code },
+        }),
+        apiJson(env, ctx, "/api/login", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "198.51.100.22" },
+          body: { password: env.AUTH_PASSWORD, code: codeRes.data.code },
+        }),
+      ]);
+      assert.deepEqual([m1.status, m2.status].sort((a, b) => a - b), [200, 401]);
+    }
+  );
+});
+
+// ============================================================================
+// 11) 全仓审计回归 B：PUT /api/sys 防锁死、LogHub 密码脱敏、scheduled 密钥保护与 VNC 鉴权
+// ============================================================================
+test("audit B: PUT /api/sys blocks lockout & hidden keys, LogHub strips secrets, bootBroadcast redacts token, scheduled guards KEY_SECRET & hourly cleanup, /api/vnc/ws auth", async () => {
+  const db = createMemoryD1();
+  const realLogHub = new LogHub({});
+  const mockLogHubNamespace = {
+    idFromName(name) { return { name }; },
+    get() { return { fetch: (url, init) => realLogHub.fetch(new Request(url, init)) }; },
+  };
+  const env = createTestEnv(db, { LOG_HUB: mockLogHubNamespace });
+  const { ctx, flush } = createExecCtx();
+  const token = await loginAndGetToken(env, ctx);
+  const authHeader = { authorization: `Bearer ${token}` };
+
+  // 1) PUT /api/sys must block enabling MFA without secret, clearing secret while MFA enabled, and hidden keys
+  const badEnable = await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "mfa.enabled", value: "1" },
+  });
+  assert.equal(badEnable.status, 400);
+
+  await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "mfa.secret", value: "JBSWY3DPEHPK3PXP" },
+  });
+  const okEnable = await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "mfa.enabled", value: "1" },
+  });
+  assert.equal(okEnable.status, 200);
+
+  const clearWhileEnabled = await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "mfa.secret", value: "" },
+  });
+  assert.equal(clearWhileEnabled.status, 400, "PUT /api/sys must not clear mfa.secret while MFA is enabled");
+
+  for (const hiddenKey of ["tg.webhook_secret", "tg.webhook_url", "google.allowed_emails", "notify.channel_enabled"]) {
+    const r = await apiJson(env, ctx, "/api/sys", {
+      method: "PUT",
+      headers: authHeader,
+      body: { key: hiddenKey, value: "tampered" },
+    });
+    assert.equal(r.status, 400, `PUT /api/sys must reject hidden key ${hiddenKey}`);
+  }
+
+  // 2) OCI tracer must not leak root-password / IAM password into LogHub
+  const cfg = await seedOciConfig(env, ctx, token);
+  await withMockFetch(
+    async (input) => {
+      const u = new URL(typeof input === "string" ? input : input.url);
+      if (u.pathname.includes("/instances/inst_sec")) {
+        return jsonResponse({
+          id: "inst_sec",
+          displayName: "vm",
+          freeformTags: { "root-password": "SuperSecretRoot#99" },
+          metadata: { user_data: "c2VjcmV0X2Nsb3VkX2luaXQ=" },
+        });
+      }
+      if (u.pathname.includes("/uiPassword")) {
+        // Place password straddling the 2000-char boundary to verify sanitize-before-slice
+        return jsonResponse({ code: "BadRequest", pad: "x".repeat(1965), password: "ResetIamSecret#88_LongTail" }, 400);
+      }
+      return jsonResponse([]);
+    },
+    async () => {
+      await apiJson(env, ctx, `/api/cfgs/${cfg.id}/instances/inst_sec`, { headers: authHeader });
+      await apiJson(env, ctx, `/api/cfgs/${cfg.id}/iam/users/ocid1.user.oc1..u1/action`, {
+        method: "POST",
+        headers: authHeader,
+        body: { action: "resetPassword" },
+      });
+    }
+  );
+  const allDetails = realLogHub.buffer.map((e) => e.detail || "").join("\n");
+  assert.equal(allDetails.includes("SuperSecretRoot#99"), false, "2xx root-password must never enter LogHub");
+  assert.equal(allDetails.includes("c2VjcmV0X2Nsb3VkX2luaXQ="), false, "2xx user_data must never enter LogHub");
+  assert.equal(allDetails.includes("ResetIamSecret#88"), false, "error password field must be redacted in LogHub");
+
+  // 3) scheduled() without KEY_SECRET must bail out and preserve vnc.session:* rows
+  const now = Date.now();
+  const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const oneDayAgo = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
+  db.sysCfg.set("vnc.session:old_1", { key: "vnc.session:old_1", value: "v2.bad.cipher.data", updated_at: tenDaysAgo });
+  db.sysCfg.set("vnc.session:fresh_1", { key: "vnc.session:fresh_1", value: "v2.bad.cipher.data", updated_at: oneDayAgo });
+
+  await worker.scheduled({ scheduledTime: Math.floor(now / 3600000) * 3600000 }, { ...env, KEY_SECRET: "" }, ctx);
+  await flush();
+  assert.equal(db.sysCfg.has("vnc.session:old_1"), true, "scheduled() without KEY_SECRET must skip cleanup");
+  assert.equal(db.sysCfg.has("vnc.session:fresh_1"), true);
+
+  // Non-hourly minute skips cleanup; hourly minute deletes only >7d rows by updated_at (no decryption needed)
+  await worker.scheduled({ scheduledTime: Math.floor(now / 3600000) * 3600000 + 60_000 }, env, ctx);
+  await flush();
+  assert.equal(db.sysCfg.has("vnc.session:old_1"), true, "non-hourly cron minute skips temp cleanup");
+
+  await worker.scheduled({ scheduledTime: Math.floor(now / 3600000) * 3600000 }, env, ctx);
+  await flush();
+  assert.equal(db.sysCfg.has("vnc.session:old_1"), false, "hourly cron deletes >7d vnc.session:*");
+  assert.equal(db.sysCfg.has("vnc.session:fresh_1"), true, "fresh vnc.session:* is preserved without decryption");
+
+  // 4) bootBroadcast error logs must redact notify.boot_token from thrown URLs
+  await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "notify.boot_token", value: "SECRET_BOOT_TOK_777" },
+  });
+  const capturedLogs = [];
+  const origLog = console.log;
+  console.log = (...args) => capturedLogs.push(args.join(" "));
+  try {
+    await withMockFetch(
+      async (input, init) => {
+        const u = new URL(typeof input === "string" ? input : input.url);
+        if (u.hostname === "backend.oci-helper.de5.net") {
+          throw new Error(`Timeout fetching ${u.href}`);
+        }
+        if (u.pathname.endsWith("/subnets")) return jsonResponse([{ id: "sub_1", lifecycleState: "AVAILABLE" }]);
+        if (u.pathname.endsWith("/vcns")) return jsonResponse([{ id: "vcn_1" }]);
+        if (u.pathname.endsWith("/availabilityDomains")) return jsonResponse([{ name: "AD-1" }]);
+        if (u.pathname.endsWith("/images")) return jsonResponse([{ id: "img_1", lifecycleState: "AVAILABLE" }]);
+        if (u.pathname.endsWith("/instances") && (init?.method || "GET").toUpperCase() === "POST") {
+          return jsonResponse({ id: "ocid1.instance.oc1..b2", displayName: "b2" });
+        }
+        return jsonResponse({});
+      },
+      async () => {
+        await apiJson(env, ctx, `/api/cfgs/${cfg.id}/batch-launch`, {
+          method: "POST",
+          headers: authHeader,
+          body: {
+            arch: "AMD",
+            count: 1,
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKeyDataForAuditTest1234567890 test",
+          },
+        });
+        await flush();
+      }
+    );
+  } finally {
+    console.log = origLog;
+  }
+  const bootErrLog = capturedLogs.find((l) => l.includes("放货面板异常")) || "";
+  assert.ok(bootErrLog.includes("token=***"), "bootBroadcast catch log must mask token=***");
+  assert.equal(bootErrLog.includes("SECRET_BOOT_TOK_777"), false, "bootBroadcast catch log must never leak raw boot_token");
+
+  // 5) Legacy AES-GCM cipher encrypted with KEY_SECRET remains decryptable, while hardcoded dev-insecure-key is rejected
+  const encUtf8 = new TextEncoder();
+  const makeLegacyCipher = async (secret, plain) => {
+    const digest = await crypto.subtle.digest("SHA-256", encUtf8.encode(`oci-helper-serverless:${secret}`));
+    const k = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, k, encUtf8.encode(plain)));
+    return `${Buffer.from(iv).toString("base64")}.${Buffer.from(cipher).toString("base64")}`;
+  };
+  db.sysCfg.set("dns.cf_token", {
+    key: "dns.cf_token",
+    value: await makeLegacyCipher(env.KEY_SECRET, "legacy-cf-token-ok"),
+    updated_at: new Date().toISOString(),
+  });
+  const cfStatusOk = await apiJson(env, ctx, "/api/cf/status", { headers: authHeader });
+  assert.equal(cfStatusOk.data.configured, true, "legacy cipher encrypted with KEY_SECRET must stay decryptable");
+
+  db.sysCfg.set("dns.cf_token", {
+    key: "dns.cf_token",
+    value: await makeLegacyCipher("dev-insecure-key", "should-not-decrypt"),
+    updated_at: new Date().toISOString(),
+  });
+  const cfStatusBlocked = await apiJson(env, ctx, "/api/cf/status", { headers: authHeader });
+  assert.equal(cfStatusBlocked.data.configured, false, "hardcoded dev-insecure-key fallback must no longer decrypt");
+
+  // 6) /api/vnc/ws enforces websocket upgrade & signed token verification
+  const vncNoUpgrade = await worker.fetch(new Request("https://panel.example.com/api/vnc/ws?token=abc"), env, ctx);
+  assert.equal(vncNoUpgrade.status, 400);
+  const vncBadTok = await worker.fetch(
+    new Request("https://panel.example.com/api/vnc/ws?token=tampered.sig", { headers: { upgrade: "websocket" } }),
+    env,
+    ctx
+  );
+  assert.equal(vncBadTok.status, 401);
+});
+
+// ============================================================================
+// 12) 全仓审计回归 C：子区间换 IP 任务、暂停态强制立即执行不改状态、锁归属与批量开机通知修正
+// ============================================================================
+test("audit C: ip-task persists compartmentId, paused launch task supports force run without flipping status, PATCH keeps lock, batch-launch reports clamped specs asynchronously", async () => {
+  const db = createMemoryD1();
+  const env = createTestEnv(db);
+  const { ctx, flush } = createExecCtx();
+  const token = await loginAndGetToken(env, ctx);
+  const authHeader = { authorization: `Bearer ${token}` };
+  const cfg = await seedOciConfig(env, ctx, token);
+
+  await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "notify.tg_bot_token", value: "123456:BOT_TOK" },
+  });
+  await apiJson(env, ctx, "/api/sys", {
+    method: "PUT",
+    headers: authHeader,
+    body: { key: "notify.tg_chat_id", value: "10086" },
+  });
+
+  // Frontend InstanceView must send compartmentId when creating IP task
+  const ivSrc = fs.readFileSync("web-dist/assets/InstanceView-BQLVaoH-.js", "utf8");
+  assert.match(ivSrc, /createIpTask\([^)]*compartmentId:P\.value\|\|void 0/);
+
+  // 1) POST /api/cfgs/:id/ip-tasks stores compartment_id and passes it to OCI
+  const seenComps = [];
+  await withMockFetch(
+    async (input) => {
+      const u = new URL(typeof input === "string" ? input : input.url);
+      if (u.hostname.endsWith(".oraclecloud.com")) {
+        if (u.searchParams.get("compartmentId")) seenComps.push(u.searchParams.get("compartmentId"));
+        if (u.pathname.endsWith("/vnicAttachments")) return jsonResponse([{ vnicId: "vnic_sub1" }]);
+        if (u.pathname.includes("/vnics/")) return jsonResponse({ id: "vnic_sub1", publicIp: "1.2.3.4" });
+        if (u.pathname.endsWith("/privateIps")) return jsonResponse([{ id: "priv_1", isPrimary: true }]);
+        if (u.pathname.endsWith("/publicIps/actions/getByPrivateIpId")) return jsonResponse({ code: "NotFound" }, 404);
+        if (u.pathname.endsWith("/publicIps")) return jsonResponse({ id: "pub_new", ipAddress: "140.238.9.9" });
+        return jsonResponse({ id: "ok" });
+      }
+      return jsonResponse({ ok: true, result: { message_id: 1 } });
+    },
+    async () => {
+      const res = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/ip-tasks`, {
+        method: "POST",
+        headers: authHeader,
+        body: {
+          instanceId: "ocid1.instance.oc1..subinst",
+          region: "ap-tokyo-1",
+          compartmentId: "ocid1.compartment.oc1..subcomp99",
+          ipVersion: "ipv4",
+          intervalSec: 120,
+        },
+      });
+      assert.equal(res.status, 200);
+      await flush();
+      assert.equal(db.tasks.get(res.data.id)?.compartment_id, "ocid1.compartment.oc1..subcomp99");
+      assert.ok(seenComps.includes("ocid1.compartment.oc1..subcomp99"));
+    }
+  );
+
+  // 2) Paused launch task can force-run once via POST /api/tasks/:id/run and stays paused
+  const pausedId = "task_paused_force";
+  db.tasks.set(pausedId, {
+    id: pausedId,
+    cfg_id: cfg.id,
+    type: "launch",
+    name: "paused-arm",
+    status: "paused",
+    region: "ap-singapore-1",
+    availability_domain: "AD-1",
+    shape: "VM.Standard.A1.Flex",
+    ocpus: 1,
+    memory_gb: 6,
+    boot_volume_gb: 50,
+    os_name: "Canonical Ubuntu 22.04",
+    ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKeyDataForAuditTest1234567890 test",
+    target_count: 1,
+    success_count: 0,
+    attempt_count: 0,
+    interval_sec: 60,
+    next_run_at: 0,
+    locked_until: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  await withMockFetch(
+    async (input, init) => {
+      const u = new URL(typeof input === "string" ? input : input.url);
+      if (u.pathname.endsWith("/images")) return jsonResponse([{ id: "img_1", lifecycleState: "AVAILABLE" }]);
+      if (u.pathname.endsWith("/subnets")) return jsonResponse([{ id: "sub_1", lifecycleState: "AVAILABLE" }]);
+      if (u.pathname.endsWith("/vcns")) return jsonResponse([{ id: "vcn_1" }]);
+      if (u.pathname.endsWith("/instances") && (init?.method || "GET").toUpperCase() === "POST") {
+        return jsonResponse({ code: "InternalError", message: "Out of host capacity." }, 500);
+      }
+      return jsonResponse([]);
+    },
+    async () => {
+      const r = await apiJson(env, ctx, `/api/tasks/${pausedId}/run`, { method: "POST", headers: authHeader });
+      assert.equal(r.status, 200);
+      assert.match(r.data.message, /容量不足/);
+      assert.equal(db.tasks.get(pausedId)?.status, "paused", "force-running paused task must NOT flip status to running");
+      assert.equal(db.tasks.get(pausedId)?.attempt_count, 1);
+    }
+  );
+
+  // 3) PATCH /api/tasks/:id must NOT clear active locked_until
+  const activeLock = Date.now() + 90_000;
+  db.tasks.get(pausedId).locked_until = activeLock;
+  await apiJson(env, ctx, `/api/tasks/${pausedId}`, {
+    method: "PATCH",
+    headers: authHeader,
+    body: { status: "running" },
+  });
+  assert.equal(db.tasks.get(pausedId)?.locked_until, activeLock, "PATCH status must preserve active locked_until mutex");
+
+  // 4) POST /api/cfgs/:id/batch-launch notifies clamped specs (2C/12G), resolved AD, and runs async via waitUntil
+  const tgMessages = [];
+  await withMockFetch(
+    async (input, init) => {
+      const u = new URL(typeof input === "string" ? input : input.url);
+      if (u.hostname.endsWith(".oraclecloud.com")) {
+        if (u.pathname.endsWith("/subnets")) return jsonResponse([{ id: "sub_1", lifecycleState: "AVAILABLE" }]);
+        if (u.pathname.endsWith("/vcns")) return jsonResponse([{ id: "vcn_1" }]);
+        if (u.pathname.endsWith("/availabilityDomains")) return jsonResponse([{ name: "AD-AUTO-1" }]);
+        if (u.pathname.endsWith("/images")) return jsonResponse([{ id: "img_1", lifecycleState: "AVAILABLE" }]);
+        if (u.pathname.endsWith("/instances") && (init?.method || "GET").toUpperCase() === "POST") {
+          return jsonResponse({ id: "ocid1.instance.oc1..batch1", displayName: "batch-vm-1" });
+        }
+        return jsonResponse([]);
+      }
+      if (u.hostname === "api.telegram.org") {
+        tgMessages.push(JSON.parse(init?.body || "{}").text || "");
+        return jsonResponse({ ok: true, result: { message_id: 1 } });
+      }
+      return jsonResponse({});
+    },
+    async () => {
+      const bRes = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/batch-launch`, {
+        method: "POST",
+        headers: authHeader,
+        body: {
+          arch: "ARM",
+          count: 1,
+          ocpus: 4,
+          memoryGb: 24,
+          sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKeyDataForAuditTest1234567890 test",
+        },
+      });
+      assert.equal(bRes.status, 200);
+      assert.equal(bRes.data.ocpus, 2);
+      assert.equal(bRes.data.memoryGb, 12);
+      assert.equal(bRes.data.availabilityDomain, "AD-AUTO-1");
+      await flush();
+      assert.equal(tgMessages.length, 1);
+      assert.match(tgMessages[0], /2C \/ 12G/);
+      assert.match(tgMessages[0], /AD-AUTO-1/);
+    }
+  );
+});
+
+// ============================================================================
+// 13) 全仓审计回归 D：N+1 子请求优化、MQL/SCIM 注入拦截与坏 cidr_list JSON 容错
+// ============================================================================
+test("audit D: listInstances & getMonthlyTraffic avoid N+1 subrequests, MQL/SCIM reject injection, malformed cidr_list never 500s", async () => {
+  const db = createMemoryD1();
+  const env = createTestEnv(db);
+  const { ctx } = createExecCtx();
+  const token = await loginAndGetToken(env, ctx);
+  const authHeader = { authorization: `Bearer ${token}` };
+  const cfg = await seedOciConfig(env, ctx, token);
+
+  // 1) 12 instances in listInstances -> only 1 compartment-level listVnicAttachments call; 20 instances in monthly traffic -> fixed 3 OCI calls
+  let vnicAttachmentCalls = 0;
+  let monthlyOciCalls = 0;
+  let mode = "list";
+  await withMockFetch(
+    async (input) => {
+      const u = new URL(typeof input === "string" ? input : input.url);
+      if (!u.hostname.endsWith(".oraclecloud.com")) return jsonResponse({});
+      if (mode === "monthly") monthlyOciCalls++;
+      if (u.pathname.endsWith("/instances")) {
+        const count = mode === "monthly" ? 20 : 12;
+        return jsonResponse(
+          Array.from({ length: count }, (_, idx) => ({
+            id: `ocid1.instance.oc1..i${idx}`,
+            displayName: `vm-${idx}`,
+            lifecycleState: "RUNNING",
+            availabilityDomain: "AD-1",
+          }))
+        );
+      }
+      if (u.pathname.endsWith("/vnicAttachments")) {
+        vnicAttachmentCalls++;
+        return jsonResponse([
+          ...Array.from({ length: 12 }, (_, idx) => ({
+            instanceId: `ocid1.instance.oc1..i${idx}`,
+            vnicId: `ocid1.vnic.oc1..v${idx}`,
+            lifecycleState: "ATTACHED",
+          })),
+          { instanceId: "ocid1.instance.oc1..i0", vnicId: "ocid1.vnic.oc1..detached_old", lifecycleState: "DETACHED" },
+        ]);
+      }
+      if (u.pathname.includes("/vnics/")) {
+        assert.equal(u.pathname.includes("detached_old"), false, "DETACHED vnicAttachment must be skipped");
+        return jsonResponse({ id: "v", publicIp: "140.238.1.1", privateIp: "10.0.0.2" });
+      }
+      if (u.pathname.includes("/summarizeMetricsData")) {
+        return jsonResponse([{ aggregatedDatapoints: [{ timestamp: "2026-11-25T00:00:00.000Z", value: 500 }] }]);
+      }
+      return jsonResponse([]);
+    },
+    async () => {
+      const listRes = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/instances`, { headers: authHeader });
+      assert.equal(listRes.status, 200);
+      assert.equal(listRes.data.items.length, 12);
+      assert.equal(vnicAttachmentCalls, 1, "listInstances must batch listVnicAttachments in 1 call");
+
+      mode = "monthly";
+      const sumRes = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/traffic/summary`, {
+        method: "POST",
+        headers: authHeader,
+        body: { year: 2026, month: 11 },
+      });
+      assert.equal(sumRes.status, 200);
+      assert.equal(sumRes.data.instanceCount, 20);
+      assert.equal(monthlyOciCalls, 3, "getMonthlyTraffic for 20 instances must use only 3 OCI subrequests");
+    }
+  );
+
+  // 2) MQL injection on /traffic/data rejected with 400
+  const badVnic = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/traffic/data`, {
+    method: "POST",
+    headers: authHeader,
+    body: {
+      vnicId: 'evil"}.mean()+x{a="1',
+      start: "2026-11-25T00:00:00Z",
+      end: "2026-11-25T01:00:00Z",
+    },
+  });
+  assert.equal(badVnic.status, 400);
+  assert.match(badVnic.data.error, /VNIC ID 格式不正确/);
+
+  // 3) Malformed cidr_list JSON in DB must not 500 task listings, and GET /api/tasks?type=ip includes dnsRecord
+  db.tasks.set("ipt_corrupt", {
+    id: "ipt_corrupt",
+    cfg_id: cfg.id,
+    type: "ip",
+    instance_id: "ocid1.instance.oc1..x",
+    region: "ap-singapore-1",
+    ip_version: "ipv4",
+    cidr_list: "{broken-json",
+    dns_record: "vm.example.com",
+    dns_zone_id: "zone_9",
+    dns_proxied: 1,
+    interval_sec: 60,
+    status: "paused",
+    attempt_count: 3,
+    next_run_at: 0,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  const tList = await apiJson(env, ctx, "/api/tasks?type=ip", { headers: authHeader });
+  assert.equal(tList.status, 200);
+  assert.deepEqual(tList.data.items[0].cidrList, []);
+  assert.equal(tList.data.items[0].dnsRecord, "vm.example.com");
+  assert.equal(tList.data.items[0].changeCount, 3);
+  const ipList = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/ip-tasks`, { headers: authHeader });
+  assert.equal(ipList.status, 200);
+  assert.deepEqual(ipList.data.items[0].cidrList, []);
+
+  // 4) Review regression: POST /api/cfgs trims tenancyOcid before getTenancy; spec & boot-volumes accept null/empty partial updates and reject sizeInGBs=0
+  const seenGetTenancyUrls = [];
+  await withMockFetch(
+    async (input) => {
+      const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("/tenancies/")) {
+        seenGetTenancyUrls.push(urlStr);
+        return jsonResponse({ id: "ocid1.tenancy.oc1..trimmed", name: "TrimTenant" });
+      }
+      if (urlStr.includes("/instances/inst_spec")) return jsonResponse({ id: "inst_spec", shapeConfig: { ocpus: 2, memoryInGBs: 12 } });
+      if (urlStr.includes("/bootVolumes/bv_1")) return jsonResponse({ id: "bv_1", sizeInGBs: 50, vpusPerGB: 20 });
+      return jsonResponse([]);
+    },
+    async () => {
+      const addTrimRes = await apiJson(env, ctx, "/api/cfgs", {
+        method: "POST",
+        headers: authHeader,
+        body: {
+          name: " trim-cfg ",
+          tenancyOcid: "  ocid1.tenancy.oc1..trimmed  ",
+          userOcid: "  ocid1.user.oc1..u  ",
+          fingerprint: " aa:bb:cc ",
+          region: " ap-singapore-1 ",
+          privateKey: `  ${TEST_RSA_PRIVATE_KEY}  `,
+        },
+      });
+      assert.equal(addTrimRes.status, 200);
+      assert.ok(seenGetTenancyUrls.length >= 2, "must call both getTenancy and listRegionSubscriptions");
+      for (const u of seenGetTenancyUrls) {
+        assert.equal(u.includes("%20"), false, `tenancy URL must use trimmed tenancyOcid, got ${u}`);
+      }
+
+      const specNullRes = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/instances/inst_spec/spec`, {
+        method: "PATCH",
+        headers: authHeader,
+        body: { ocpus: null, memoryGb: 16 },
+      });
+      assert.equal(specNullRes.status, 200, "PATCH spec must allow null for omitted ocpus");
+
+      const bvNullRes = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/boot-volumes/bv_1`, {
+        method: "PATCH",
+        headers: authHeader,
+        body: { sizeInGBs: null, vpusPerGB: 20 },
+      });
+      assert.equal(bvNullRes.status, 200, "PATCH boot-volume must allow null for omitted sizeInGBs");
+
+      const bvZeroRes = await apiJson(env, ctx, `/api/cfgs/${cfg.id}/boot-volumes/bv_1`, {
+        method: "PATCH",
+        headers: authHeader,
+        body: { sizeInGBs: 0, vpusPerGB: 20 },
+      });
+      assert.equal(bvZeroRes.status, 400, "PATCH boot-volume must reject sizeInGBs <= 0 instead of clamping to 1");
+    }
+  );
+});
+
 

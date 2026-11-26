@@ -382,11 +382,34 @@ function buildHelpMessage() {
   };
 }
 
+// shortcut: 单次最多翻 10 页（1000 条），账号或任务超 1000 个时改用后端 SQL 聚合接口
+async function fetchAllPages(app, deps, env, ctx, basePath, opts = {}) {
+  const maxPages = opts.maxPages ?? 10;
+  const stopWhen = opts.stopWhen;
+  const sep = basePath.includes("?") ? "&" : "?";
+  const first = await callInternalApi(app, deps, env, ctx, `${basePath}${sep}page=1&pageSize=100`);
+  if (!first.ok) return first;
+  const firstItems = Array.isArray(first.data?.items) ? first.data.items : [];
+  const items = [...firstItems];
+  const total = Number(first.data?.total ?? items.length);
+  if (stopWhen?.(firstItems)) return { ok: true, status: first.status, data: { ...first.data, items, total } };
+  const totalPages = Math.min(maxPages, Math.ceil(total / 100));
+  for (let page = 2; page <= totalPages && items.length < total; page++) {
+    const next = await callInternalApi(app, deps, env, ctx, `${basePath}${sep}page=${page}&pageSize=100`);
+    if (!next.ok) return next;
+    const pageItems = Array.isArray(next.data?.items) ? next.data.items : [];
+    if (!pageItems.length) break;
+    items.push(...pageItems);
+    if (stopWhen?.(pageItems)) break;
+  }
+  return { ok: true, status: first.status, data: { ...first.data, items, total } };
+}
+
 async function buildOverviewView(app, deps, env, ctx) {
   const [cfgsRes, launchRes, ipRes] = await Promise.all([
-    callInternalApi(app, deps, env, ctx, "/api/cfgs?page=1&pageSize=100"),
-    callInternalApi(app, deps, env, ctx, "/api/tasks?type=launch&page=1&pageSize=100"),
-    callInternalApi(app, deps, env, ctx, "/api/ip-tasks?page=1&pageSize=100"),
+    fetchAllPages(app, deps, env, ctx, "/api/cfgs"),
+    fetchAllPages(app, deps, env, ctx, "/api/tasks?type=launch"),
+    fetchAllPages(app, deps, env, ctx, "/api/ip-tasks"),
   ]);
   const failed = [cfgsRes, launchRes, ipRes].find((r) => !r.ok);
   if (failed) {
@@ -927,9 +950,10 @@ async function buildTaskListView(app, deps, env, ctx, kind = "l", page = 1) {
 }
 
 async function fetchSingleTask(app, deps, env, ctx, kind, taskId) {
-  const endpoint =
-    kind === "p" ? "/api/ip-tasks?page=1&pageSize=100" : "/api/tasks?type=launch&page=1&pageSize=100";
-  const res = await callInternalApi(app, deps, env, ctx, endpoint);
+  const basePath = kind === "p" ? "/api/ip-tasks" : "/api/tasks?type=launch";
+  const res = await fetchAllPages(app, deps, env, ctx, basePath, {
+    stopWhen: (pageItems) => pageItems.some((item) => item.id === taskId),
+  });
   if (!res.ok) return { ok: false, error: res.error, task: null };
   const items = Array.isArray(res.data?.items) ? res.data.items : [];
   const task = items.find((item) => item.id === taskId) || null;
@@ -1208,89 +1232,104 @@ async function handleCallbackQuery(cq, botToken, chatId, env, ctx, app, deps, tg
   const messageId = cq.message?.message_id;
   const { scope, action, args } = parsed;
 
-  if (scope === "m" && (action === "home" || action === "st")) {
-    const view = await buildOverviewView(app, deps, env, ctx);
-    await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-    return;
-  }
+  try {
+    if (scope === "m" && (action === "home" || action === "st")) {
+      const view = await buildOverviewView(app, deps, env, ctx);
+      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+      return;
+    }
 
-  if (scope === "c") {
-    if (action === "ls") {
-      const view = await buildConfigListView(app, deps, env, ctx, args[0] || 1);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
+    if (scope === "c") {
+      if (action === "ls") {
+        const view = await buildConfigListView(app, deps, env, ctx, args[0] || 1);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "v" && args[0]) {
+        const view = await buildConfigDetailView(app, deps, env, ctx, args[0]);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "chk" && args[0]) {
+        await showLoading(botToken, chatId, messageId, "正在测活 OCI 配置，请稍候…", tgFetch);
+        const view = await buildConfigCheckView(app, deps, env, ctx, args[0]);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "ins" && args[0]) {
+        await showLoading(botToken, chatId, messageId, "正在拉取实例列表，请稍候…", tgFetch);
+        const view = await buildInstanceListView(app, deps, env, ctx, args[0], args[1] || 1);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
     }
-    if (action === "v" && args[0]) {
-      const view = await buildConfigDetailView(app, deps, env, ctx, args[0]);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "chk" && args[0]) {
-      await showLoading(botToken, chatId, messageId, "正在测活 OCI 配置，请稍候…", tgFetch);
-      const view = await buildConfigCheckView(app, deps, env, ctx, args[0]);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "ins" && args[0]) {
-      await showLoading(botToken, chatId, messageId, "正在拉取实例列表，请稍候…", tgFetch);
-      const view = await buildInstanceListView(app, deps, env, ctx, args[0], args[1] || 1);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-  }
 
-  if (scope === "i") {
-    if (action === "v" && args[0] && args[1]) {
-      const view = await buildInstanceDetailView(app, deps, env, ctx, args[0], args[1]);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
+    if (scope === "i") {
+      if (action === "v" && args[0] && args[1]) {
+        const view = await buildInstanceDetailView(app, deps, env, ctx, args[0], args[1]);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "ask" && args[0] && args[1] && args[2]) {
+        const view = await buildInstanceAskView(app, deps, env, ctx, args[0], args[1], args[2]);
+        if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "do" && args[0] && args[1] && args[2]) {
+        if (!["st", "sp", "rs", "ip"].includes(args[0])) return;
+        await showLoading(botToken, chatId, messageId, "正在执行实例操作，请稍候…", tgFetch);
+        const view = await buildInstanceDoView(app, deps, env, ctx, args[0], args[1], args[2]);
+        if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
     }
-    if (action === "ask" && args[0] && args[1] && args[2]) {
-      const view = await buildInstanceAskView(app, deps, env, ctx, args[0], args[1], args[2]);
-      if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "do" && args[0] && args[1] && args[2]) {
-      if (!["st", "sp", "rs", "ip"].includes(args[0])) return;
-      await showLoading(botToken, chatId, messageId, "正在执行实例操作，请稍候…", tgFetch);
-      const view = await buildInstanceDoView(app, deps, env, ctx, args[0], args[1], args[2]);
-      if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-  }
 
-  if (scope === "t") {
-    if (action === "ls" && args[0]) {
-      const view = await buildTaskListView(app, deps, env, ctx, args[0], args[1] || 1);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
+    if (scope === "t") {
+      if (action === "ls" && args[0]) {
+        const view = await buildTaskListView(app, deps, env, ctx, args[0], args[1] || 1);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "v" && args[0] && args[1]) {
+        const view = await buildTaskDetailView(app, deps, env, ctx, args[0], args[1]);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "tog" && args[0] && args[1]) {
+        const view = await buildTaskToggleView(app, deps, env, ctx, args[0], args[1]);
+        if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "run" && args[0] === "l" && args[1]) {
+        await showLoading(botToken, chatId, messageId, "正在立即执行抢机任务，请稍候…", tgFetch);
+        const view = await buildLaunchTaskRunView(app, deps, env, ctx, args[1]);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "ask" && args[0] && args[1]) {
+        const view = await buildIpTaskAskView(app, deps, env, ctx, args[0], args[1]);
+        if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+        return;
+      }
+      if (action === "do" && (args[0] === "run" || args[0] === "res") && args[1]) {
+        await showLoading(botToken, chatId, messageId, "正在执行换 IP 任务，请稍候…", tgFetch);
+        const view = await buildIpTaskDoView(app, deps, env, ctx, args[0], args[1]);
+        await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
+      }
     }
-    if (action === "v" && args[0] && args[1]) {
-      const view = await buildTaskDetailView(app, deps, env, ctx, args[0], args[1]);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "tog" && args[0] && args[1]) {
-      const view = await buildTaskToggleView(app, deps, env, ctx, args[0], args[1]);
-      if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "run" && args[0] === "l" && args[1]) {
-      await showLoading(botToken, chatId, messageId, "正在立即执行抢机任务，请稍候…", tgFetch);
-      const view = await buildLaunchTaskRunView(app, deps, env, ctx, args[1]);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "ask" && args[0] && args[1]) {
-      const view = await buildIpTaskAskView(app, deps, env, ctx, args[0], args[1]);
-      if (view) await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-      return;
-    }
-    if (action === "do" && (args[0] === "run" || args[0] === "res") && args[1]) {
-      await showLoading(botToken, chatId, messageId, "正在执行换 IP 任务，请稍候…", tgFetch);
-      const view = await buildIpTaskDoView(app, deps, env, ctx, args[0], args[1]);
-      await editOrSendHtml(botToken, chatId, messageId, view, tgFetch);
-    }
+  } catch (err) {
+    // 兜底恢复界面，避免在 showLoading 清空按钮后永久卡在「请稍候」
+    const msg = redactBotToken(err?.message ?? err ?? "未知错误");
+    await editOrSendHtml(
+      botToken,
+      chatId,
+      messageId,
+      {
+        text: truncateTelegramText(`<b>❌ 操作执行异常</b>\n<code>${escapeHtml(msg)}</code>`),
+        reply_markup: { inline_keyboard: [[{ text: "🏠 主菜单", callback_data: "m:home" }]] },
+      },
+      tgFetch
+    ).catch(() => {});
   }
 }
 
@@ -1363,7 +1402,7 @@ function readExecutionCtx(c) {
  * @param {object} deps
  * @param {typeof fetch} [tgFetch=fetch]
  */
-export function registerTgBot(app, deps, tgFetch = fetch) {
+export function registerTgBot(app, deps, tgFetch = (...args) => globalThis.fetch(...args)) {
   const seenUpdateIds = new Set();
 
   app.post("/api/tg/webhook", async (c) => {
